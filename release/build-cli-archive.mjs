@@ -241,7 +241,8 @@ async function main() {
     const name = archiveName(version, platformName);
     const prefix = name.replace(/\.(?:tar\.gz|zip)$/u, '');
     const store = workspaceStoreArguments();
-    const temporary = mkdtempSync(join(realpathSync(tmpdir()), 'erden-cli-archive-'));
+    // The native real path expands a Windows 8.3 short name, so the smoke run's tree has no aliased parent.
+    const temporary = mkdtempSync(join(realpathSync.native(tmpdir()), 'erden-cli-archive-'));
     try {
         const runs = [];
         let smoke;

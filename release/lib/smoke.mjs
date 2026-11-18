@@ -3,7 +3,7 @@
 // `erden pack` must pass on a copy of examples/erden-demo. Everything runs with a temporary home, so nothing is
 // written into the archive tree or the user's directories.
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,11 +13,13 @@ function erden(root, args, home, cwd, name = 'erden') {
     const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, '.config') };
     delete env.ERDEN_REASONER_BIN;
     const child = windows
-        ? spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `"${launcher}" ${args.join(' ')}`], {
+        ? spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `""${launcher}" ${args.join(' ')}"`], {
               cwd,
               encoding: 'utf8',
               env,
               windowsHide: true,
+              // `/s /c` takes off the outer quotes, and the launcher keeps its own; Node's quoting would escape them.
+              windowsVerbatimArguments: true,
           })
         : spawnSync(launcher, args, { cwd, encoding: 'utf8', env });
     if (child.status !== 0) {
@@ -28,7 +30,9 @@ function erden(root, args, home, cwd, name = 'erden') {
 
 /** The smoke run's summary; throws on the first failure. */
 export function smokeTest(root, demo) {
-    const temporary = mkdtempSync(join(tmpdir(), 'erden-release-smoke-'));
+    // The native real path: on Windows it expands an 8.3 short name in the temporary directory, which `erden init`
+    // refuses as an aliased parent.
+    const temporary = mkdtempSync(join(realpathSync.native(tmpdir()), 'erden-release-smoke-'));
     try {
         const home = join(temporary, 'home');
         cpSync(demo, join(temporary, 'demo'), { recursive: true });

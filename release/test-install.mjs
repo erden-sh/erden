@@ -59,13 +59,15 @@ done
 
 /** The same steps on Windows, through the installed `erden.cmd`. */
 function windowsSteps(target, demo) {
-    const work = mkdtempSync(join(realpathSync(tmpdir()), 'erden-install-steps-'));
+    // The native real path expands an 8.3 short name, which `erden init` refuses as an aliased parent.
+    const work = mkdtempSync(join(realpathSync.native(tmpdir()), 'erden-install-steps-'));
     cpSync(demo, join(work, 'demo'), { recursive: true });
     function erden(args, name = 'erden') {
         return spawnSync(
             process.env.ComSpec ?? 'cmd.exe',
-            ['/d', '/s', '/c', `"${join(target, 'bin', `${name}.cmd`)}" ${args}`],
-            { cwd: work, encoding: 'utf8', windowsHide: true },
+            ['/d', '/s', '/c', `""${join(target, 'bin', `${name}.cmd`)}" ${args}"`],
+            // `/s /c` takes off the outer quotes, and the launcher keeps its own; Node's quoting would escape them.
+            { cwd: work, encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: true },
         );
     }
     const help = erden('help');
@@ -174,7 +176,7 @@ function main() {
     const record = JSON.parse(readFileSync(values.record, 'utf8'));
     assertPinned(values.archive, record.archive, `${record.platform} archive`);
     const scripts = installScripts(pinsOfRecord(record));
-    const work = mkdtempSync(join(realpathSync(tmpdir()), 'erden-install-test-'));
+    const work = mkdtempSync(join(realpathSync.native(tmpdir()), 'erden-install-test-'));
     try {
         const input = join(work, 'in');
         mkdirSync(input);
