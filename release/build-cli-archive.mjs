@@ -35,6 +35,9 @@ import { smokeTest } from './lib/smoke.mjs';
 const release = import.meta.dirname;
 const repository = resolve(release, '..');
 const windows = process.platform === 'win32';
+// The system tar for the Node.js archive: on Windows its own bsdtar, which reads the zip Node.js ships there. A Git Bash
+// step puts Git's GNU tar, which reads no zip, ahead of it on the PATH.
+const SYSTEM_TAR = windows ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
 
 function run(command, args, options = {}) {
     const child = windows
@@ -102,7 +105,7 @@ function dropInstallState(nodeModules) {
 function extractNode(nodeArchive, runtime, directory) {
     mkdirSync(directory, { recursive: true });
     copyFileSync(nodeArchive, join(directory, basename(nodeArchive)));
-    run('tar', ['-xf', basename(nodeArchive)], { cwd: directory });
+    run(SYSTEM_TAR, ['-xf', basename(nodeArchive)], { cwd: directory });
     const top = join(directory, runtime.file.replace(/\.(?:tar\.(?:gz|xz)|zip)$/u, ''));
     return { executable: join(top, runtime.executable), license: join(top, 'LICENSE') };
 }
