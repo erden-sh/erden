@@ -62,7 +62,13 @@ export function pinsOf(records, { allowPartial = false } = {}) {
         version: single(records, 'version'),
         sourceCommit: single(records, 'sourceCommit'),
         sourceDateEpoch: single(records, 'sourceDateEpoch'),
-        node: single(records, 'node').version,
+        // Each platform ships its own Node.js archive, so only the version must agree.
+        node: single(
+            Object.fromEntries(
+                Object.entries(records).map(([platform, record]) => [platform, { node: record.node.version }]),
+            ),
+            'node',
+        ),
         complete: missing.length === 0,
         archives: Object.fromEntries(platforms.map((platform) => [platform, records[platform].archive])),
         engines: Object.fromEntries(
