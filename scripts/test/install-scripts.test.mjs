@@ -134,7 +134,7 @@ describe('install.sh', { skip: process.platform === 'win32' }, () => {
             assert.match(request, /-A erden-install\/1 /u);
             assert.match(
                 request,
-                new RegExp(`https://github\\.com/cbnsndwch/erden/releases/download/v1\\.0\\.0/${context.file}`, 'u'),
+                new RegExp(`https://github\\.com/erden-sh/erden/releases/download/v1\\.0\\.0/${context.file}`, 'u'),
             );
             assert.ok(existsSync(join(context.home, '.local', 'share', 'erden', VERSION, 'bin', 'erden')));
         } finally {
