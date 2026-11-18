@@ -1,0 +1,27 @@
+{
+    "name": "@erden/reasoner-darwin-arm64",
+    "version": "0.3.0+purrdf.0.12.0.dfb1df7",
+    "description": "Erden reasoner for macOS arm64 (Apple silicon)",
+    "license": "Apache-2.0",
+    "bin": {
+        "erden-reasoner": "bin/erden-reasoner"
+    },
+    "files": [
+        "bin",
+        "metadata.json",
+        "README.md",
+        "LICENSE",
+        "NOTICE",
+        "THIRD-PARTY-NOTICES.md"
+    ],
+    "os": [
+        "darwin"
+    ],
+    "cpu": [
+        "arm64"
+    ],
+    "type": "module",
+    "engines": {
+        "node": "^24"
+    }
+}

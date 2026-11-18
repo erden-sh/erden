@@ -1,0 +1,30 @@
+{
+    "name": "@erden/reasoner-linux-x64-gnu",
+    "version": "0.3.0+purrdf.0.12.0.dfb1df7",
+    "description": "Erden reasoner for Linux x64 (glibc)",
+    "license": "Apache-2.0",
+    "bin": {
+        "erden-reasoner": "bin/erden-reasoner"
+    },
+    "files": [
+        "bin",
+        "metadata.json",
+        "README.md",
+        "LICENSE",
+        "NOTICE",
+        "THIRD-PARTY-NOTICES.md"
+    ],
+    "os": [
+        "linux"
+    ],
+    "cpu": [
+        "x64"
+    ],
+    "libc": [
+        "glibc"
+    ],
+    "type": "module",
+    "engines": {
+        "node": "^24"
+    }
+}

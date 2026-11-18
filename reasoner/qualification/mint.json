@@ -1,0 +1,214 @@
+{
+  "schemaVersion": 1,
+  "tool": {
+    "name": "erden-reasoner",
+    "version": "0.3.0+purrdf.0.12.0.dfb1df7",
+    "adapterDigest": "sha256:b923a50baa9b12d132a5d3088d7cc5ee54b6a3b8ade1a2126027720ace476001",
+    "calculusDigest": "sha256:fc444990f8c8c180df359a6beca8811fa3f4f2382f590fcb2f2a56957c19529c"
+  },
+  "workflow": ".github/workflows/reasoner-build.yml",
+  "workflowRunId": 44340835647,
+  "sourceCommit": "331be23a69583a1c997f662ca020094af76d704b",
+  "adapterCrateSourceTree": "ca747d7150c34483e7d565d7197f5792c9a377b7",
+  "cargoLockDigest": "sha256:1974a65f312a8f746f367c3c57cf14dbee0c6f93d78e8faa7e8ec2ef85219055",
+  "toolchain": {
+    "rustc": "1.96.0",
+    "commit": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",
+    "llvm": "22.1.2"
+  },
+  "linuxBuilderImage": "rust@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc",
+  "targets": {
+    "x86_64-unknown-linux-gnu": {
+      "schemaVersion": 1,
+      "qualificationSourceCommit": "331be23a69583a1c997f662ca020094af76d704b",
+      "qualificationReasonerCommitTree": "ae9e53862a1156005f4a2b1f86c17ca13810f707",
+      "adapterCrateSourceTree": "ca747d7150c34483e7d565d7197f5792c9a377b7",
+      "cargoLockDigest": "sha256:1974a65f312a8f746f367c3c57cf14dbee0c6f93d78e8faa7e8ec2ef85219055",
+      "sourceDateEpoch": 1785703783,
+      "toolchain": {
+        "rustc": "1.96.0",
+        "commit": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",
+        "llvm": "22.1.2"
+      },
+      "host": {
+        "platform": "linux",
+        "arch": "x64"
+      },
+      "target": "x86_64-unknown-linux-gnu",
+      "builderImage": "rust@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc",
+      "builderPlatform": "linux/amd64",
+      "rustflags": "-C link-arg=-Wl,--build-id=none --remap-path-prefix=/work=/erden-reasoner --remap-path-prefix=/usr/local/cargo=/cargo",
+      "runs": [
+        {
+          "label": "clean-target-a",
+          "sourcePath": "git-archive-a",
+          "bytes": 1977432,
+          "sha256": "sha256:c306c20e1ee0bdeba53a5f818fb3a561cc6d585a658436a3af7c41db9a802df1"
+        },
+        {
+          "label": "clean-target-b",
+          "sourcePath": "git-archive-b",
+          "bytes": 1977432,
+          "sha256": "sha256:c306c20e1ee0bdeba53a5f818fb3a561cc6d585a658436a3af7c41db9a802df1"
+        }
+      ],
+      "knownAnswer": {
+        "fixture": "subclass-type",
+        "responseBytes": 2299,
+        "responseSha256": "sha256:a47bcdcd0a0f49e43be0ef7418ba3d9686d8ef088318b51b0f0bb94f67be209d"
+      },
+      "result": "byte-identical",
+      "runner": "ubuntu-24.04",
+      "workflowRunId": 44340835647
+    },
+    "aarch64-unknown-linux-gnu": {
+      "schemaVersion": 1,
+      "qualificationSourceCommit": "331be23a69583a1c997f662ca020094af76d704b",
+      "qualificationReasonerCommitTree": "ae9e53862a1156005f4a2b1f86c17ca13810f707",
+      "adapterCrateSourceTree": "ca747d7150c34483e7d565d7197f5792c9a377b7",
+      "cargoLockDigest": "sha256:1974a65f312a8f746f367c3c57cf14dbee0c6f93d78e8faa7e8ec2ef85219055",
+      "sourceDateEpoch": 1785703783,
+      "toolchain": {
+        "rustc": "1.96.0",
+        "commit": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",
+        "llvm": "22.1.2"
+      },
+      "host": {
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "target": "aarch64-unknown-linux-gnu",
+      "builderImage": "rust@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc",
+      "builderPlatform": "linux/arm64",
+      "rustflags": "-C link-arg=-Wl,--build-id=none --remap-path-prefix=/work=/erden-reasoner --remap-path-prefix=/usr/local/cargo=/cargo",
+      "runs": [
+        {
+          "label": "clean-target-a",
+          "sourcePath": "git-archive-a",
+          "bytes": 1643192,
+          "sha256": "sha256:2addbe6a0ca49b6d9b6b897c3ab969a30adad851c290f6fe1626caa3a48cb1c9"
+        },
+        {
+          "label": "clean-target-b",
+          "sourcePath": "git-archive-b",
+          "bytes": 1643192,
+          "sha256": "sha256:2addbe6a0ca49b6d9b6b897c3ab969a30adad851c290f6fe1626caa3a48cb1c9"
+        }
+      ],
+      "knownAnswer": {
+        "fixture": "subclass-type",
+        "responseBytes": 2299,
+        "responseSha256": "sha256:dd82f3d3795a6d675680360846835bbadf09d9bff0116c09df378afdb6ae29b0"
+      },
+      "result": "byte-identical",
+      "runner": "ubuntu-24.04-arm",
+      "workflowRunId": 44340835647
+    },
+    "aarch64-apple-darwin": {
+      "schemaVersion": 1,
+      "qualificationSourceCommit": "331be23a69583a1c997f662ca020094af76d704b",
+      "qualificationReasonerCommitTree": "ae9e53862a1156005f4a2b1f86c17ca13810f707",
+      "adapterCrateSourceTree": "ca747d7150c34483e7d565d7197f5792c9a377b7",
+      "cargoLockDigest": "sha256:1974a65f312a8f746f367c3c57cf14dbee0c6f93d78e8faa7e8ec2ef85219055",
+      "sourceDateEpoch": 1785703783,
+      "toolchain": {
+        "rustc": "1.96.0",
+        "commit": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",
+        "llvm": "22.1.2"
+      },
+      "host": {
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "target": "aarch64-apple-darwin",
+      "linker": {
+        "xcode": "Xcode 16.4 (Build version 16F6)",
+        "sdk": "macosx 15.5 (24F74)",
+        "cc": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+        "ld": "@(#)PROGRAM:ld PROJECT:ld-1167.5"
+      },
+      "rustflags": "--remap-path-prefix=<reasoner>=/erden-reasoner --remap-path-prefix=<cargo-home>=/cargo",
+      "runs": [
+        {
+          "label": "clean-target-a",
+          "sourcePath": "git-archive-a",
+          "bytes": 1562512,
+          "sha256": "sha256:43a7455b322e05743c6cb8aad8a7b7d45ac50ec6ad2a79b0e1ced1d54c6e4527"
+        },
+        {
+          "label": "clean-target-b",
+          "sourcePath": "git-archive-b",
+          "bytes": 1562512,
+          "sha256": "sha256:43a7455b322e05743c6cb8aad8a7b7d45ac50ec6ad2a79b0e1ced1d54c6e4527"
+        }
+      ],
+      "knownAnswer": {
+        "fixture": "subclass-type",
+        "responseBytes": 2299,
+        "responseSha256": "sha256:fa91256059839a4333d2ddc1ce29c4e5215acf23c2da4f34aacd4ed1ed817961"
+      },
+      "result": "byte-identical",
+      "runner": "macos-15",
+      "workflowRunId": 44340835647
+    },
+    "x86_64-pc-windows-msvc": {
+      "schemaVersion": 1,
+      "qualificationSourceCommit": "331be23a69583a1c997f662ca020094af76d704b",
+      "qualificationReasonerCommitTree": "ae9e53862a1156005f4a2b1f86c17ca13810f707",
+      "adapterCrateSourceTree": "ca747d7150c34483e7d565d7197f5792c9a377b7",
+      "cargoLockDigest": "sha256:1974a65f312a8f746f367c3c57cf14dbee0c6f93d78e8faa7e8ec2ef85219055",
+      "sourceDateEpoch": 1785703783,
+      "toolchain": {
+        "rustc": "1.96.0",
+        "commit": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",
+        "llvm": "22.1.2"
+      },
+      "host": {
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "target": "x86_64-pc-windows-msvc",
+      "linker": {
+        "visualStudio": "18.11.12328.437",
+        "msvcTools": "14.51.36231"
+      },
+      "rustflags": "-C link-arg=/Brepro --remap-path-prefix=<reasoner>=/erden-reasoner --remap-path-prefix=<cargo-home>=/cargo",
+      "runs": [
+        {
+          "label": "clean-target-a",
+          "sourcePath": "git-archive-a",
+          "bytes": 1738240,
+          "sha256": "sha256:932b3efe2e306e35e47a0837da77484720bf8e6f03ab46d88bb8ffd6be92e403"
+        },
+        {
+          "label": "clean-target-b",
+          "sourcePath": "git-archive-b",
+          "bytes": 1738240,
+          "sha256": "sha256:932b3efe2e306e35e47a0837da77484720bf8e6f03ab46d88bb8ffd6be92e403"
+        }
+      ],
+      "knownAnswer": {
+        "fixture": "subclass-type",
+        "responseBytes": 2299,
+        "responseSha256": "sha256:7383770aca64e163af7733534113a020183022d24830a8e5fd8c81d4fb868adb"
+      },
+      "result": "byte-identical",
+      "runner": "windows-2025",
+      "workflowRunId": 44340835647
+    }
+  },
+  "crossPlatformDeterminism": {
+    "result": "identical",
+    "requestCount": 43,
+    "requestsManifestSha256": "sha256:9bcde2b7f757aa2e228b69b9f97903e9b19de3210b8a6be669ff3c73f95d98f7",
+    "excludedFields": [
+      "tool.executableDigest"
+    ],
+    "executables": {
+      "x86_64-unknown-linux-gnu": "sha256:c306c20e1ee0bdeba53a5f818fb3a561cc6d585a658436a3af7c41db9a802df1",
+      "aarch64-unknown-linux-gnu": "sha256:2addbe6a0ca49b6d9b6b897c3ab969a30adad851c290f6fe1626caa3a48cb1c9",
+      "aarch64-apple-darwin": "sha256:43a7455b322e05743c6cb8aad8a7b7d45ac50ec6ad2a79b0e1ced1d54c6e4527",
+      "x86_64-pc-windows-msvc": "sha256:932b3efe2e306e35e47a0837da77484720bf8e6f03ab46d88bb8ffd6be92e403"
+    }
+  }
+}
