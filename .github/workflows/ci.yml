@@ -79,13 +79,18 @@ jobs:
                   key: erden-shacl-win32-x64-msvc-${{ hashFiles('shacl/erden-shacl/**', 'shacl/Cargo.*', 'shacl/rust-toolchain.toml', 'shacl/distribution/src/artifacts.js') }}
             - run: rustup toolchain install 1.98.0 --profile minimal --target x86_64-pc-windows-msvc
             - run: node shacl/qualification/build-from-source.mjs
-            # The workspace tests run the reasoner built from this commit's source with the pinned toolchain.
-            - name: Build the reasoner from source with the pinned toolchain
-              run: rustup toolchain install 1.96.0 --profile minimal && pnpm run reasoner:build
+            # The reasoner built as its mint builds it, cached per build input; build-from-source.mjs installs it into its
+            # platform package only when byte-identical to the pin.
+            - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+              with:
+                  path: reasoner/source-build
+                  key: erden-reasoner-x86_64-pc-windows-msvc-${{ hashFiles('reasoner/erden-reasoner/**', 'reasoner/Cargo.*', 'reasoner/rust-toolchain.toml', 'reasoner/distribution/src/artifacts.js') }}
+            - run: rustup toolchain install 1.96.0 --profile minimal --target x86_64-pc-windows-msvc
+            - run: node reasoner/qualification/build-from-source.mjs
             - run: pnpm run check:distribution:closure
             - run: pnpm run check:workspace
               env:
-                  ERDEN_REASONER_BIN: ${{ github.workspace }}\reasoner\target\release\erden-reasoner.exe
+                  ERDEN_REASONER_BIN: ${{ github.workspace }}\reasoner\source-build\x86_64-pc-windows-msvc\erden-reasoner.exe
             - run: pnpm run test:distribution:clean
             - run: pnpm run test:distribution:clean:pnpm
 
@@ -113,21 +118,25 @@ jobs:
                   path: shacl/linux-arm64-gnu/bin
                   key: erden-shacl-linux-arm64-gnu-${{ hashFiles('shacl/erden-shacl/**', 'shacl/Cargo.*', 'shacl/rust-toolchain.toml', 'shacl/distribution/src/artifacts.js') }}
             - run: node shacl/qualification/build-from-source.mjs
+            # The reasoner built as its mint builds it, cached per build input; build-from-source.mjs installs it into its
+            # platform package only when byte-identical to the pin.
+            - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+              with:
+                  path: reasoner/source-build
+                  key: erden-reasoner-aarch64-unknown-linux-gnu-${{ hashFiles('reasoner/erden-reasoner/**', 'reasoner/Cargo.*', 'reasoner/rust-toolchain.toml', 'reasoner/distribution/src/artifacts.js') }}
+            - run: pnpm run reasoner:build:linux
             - run: pnpm run check:distribution:closure
             - run: pnpm run test:distribution:clean
             - run: pnpm run test:distribution:clean:pnpm
             # The workspace tests with the native reasoner, apart from check-main-reports.json, which records the Linux
             # x64 report bytes, which name that executable's digest. The reasoner-build workflow compares the platforms'
             # answers instead.
-            # The workspace tests run the reasoner built from this commit's source with the pinned toolchain.
-            - name: Build the reasoner from source with the pinned toolchain
-              run: rustup toolchain install 1.96.0 --profile minimal && pnpm run reasoner:build
             - name: Run the workspace tests with the native Linux arm64 reasoner
               run: >-
                   pnpm run build:runtime && pnpm exec vitest run
                   --exclude packages/project/test/check-main-reports.test.ts
               env:
-                  ERDEN_REASONER_BIN: ${{ github.workspace }}/reasoner/target/release/erden-reasoner
+                  ERDEN_REASONER_BIN: ${{ github.workspace }}/reasoner/source-build/aarch64-unknown-linux-gnu/erden-reasoner
 
     distribution-macos-arm64:
         # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
@@ -153,6 +162,14 @@ jobs:
                   key: erden-shacl-darwin-arm64-${{ hashFiles('shacl/erden-shacl/**', 'shacl/Cargo.*', 'shacl/rust-toolchain.toml', 'shacl/distribution/src/artifacts.js') }}
             - run: rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-darwin
             - run: node shacl/qualification/build-from-source.mjs
+            # The reasoner built as its mint builds it, cached per build input; build-from-source.mjs installs it into its
+            # platform package only when byte-identical to the pin.
+            - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+              with:
+                  path: reasoner/source-build
+                  key: erden-reasoner-aarch64-apple-darwin-${{ hashFiles('reasoner/erden-reasoner/**', 'reasoner/Cargo.*', 'reasoner/rust-toolchain.toml', 'reasoner/distribution/src/artifacts.js') }}
+            - run: rustup toolchain install 1.96.0 --profile minimal --target aarch64-apple-darwin
+            - run: node reasoner/qualification/build-from-source.mjs
             - run: pnpm run check:distribution:closure
             - run: pnpm run test:distribution:clean
             - run: pnpm run test:distribution:clean:pnpm

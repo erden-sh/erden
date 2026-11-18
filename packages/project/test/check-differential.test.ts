@@ -24,9 +24,11 @@ beforeAll(async () => {
     fixtures = await buildDifferentialFixtures(root);
 }, 120_000);
 
+// Removing the fixture tree checks every entry's ownership and mount on the way: about 12 s on a busy host, so it gets
+// the setup's budget, not the 10 s default.
 afterAll(() => {
     cleanupTestTempRoot(root);
-});
+}, 120_000);
 
 async function check(fixture: DifferentialFixture, separate = false): Promise<CheckRun> {
     const capture = capturingReasoner(separate ? separateReasoner(nodeReasonerService) : nodeReasonerService);

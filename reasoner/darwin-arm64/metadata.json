@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "packageName": "@erden/reasoner-darwin-arm64",
+  "packageVersion": "0.3.0+purrdf.0.12.0.dfb1df7",
+  "tool": {
+    "name": "erden-reasoner",
+    "version": "0.3.0+purrdf.0.12.0.dfb1df7",
+    "adapterDigest": "sha256:b923a50baa9b12d132a5d3088d7cc5ee54b6a3b8ade1a2126027720ace476001",
+    "calculusDigest": "sha256:fc444990f8c8c180df359a6beca8811fa3f4f2382f590fcb2f2a56957c19529c"
+  },
+  "runtime": {
+    "os": "darwin",
+    "cpu": "arm64"
+  },
+  "target": "aarch64-apple-darwin",
+  "binary": {
+    "path": "bin/erden-reasoner",
+    "bytes": 1562528,
+    "sha256": "sha256:13dd1fae8b00fb77fdaf4dbb70952b649d9eacc3f9da95f1af6688a43da381cb"
+  },
+  "knownAnswer": {
+    "fixture": "subclass-type",
+    "responseBytes": 2299,
+    "responseSha256": "sha256:8f573d025bcf6241a041408e693d23a037344a04fdc63778a40cef2575d3b555"
+  }
+}

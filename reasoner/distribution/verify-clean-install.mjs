@@ -3,29 +3,16 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { QUALIFIED_REASONER_ARTIFACTS, REASONER_TOOL } from './src/index.js';
+
 const expectedRuntime = process.argv[2];
 const inactivePolicy = process.argv[3] ?? 'must-be-absent';
+// The pins come from this checkout's resolver anchors: the installed packages must carry exactly those binaries.
 const platforms = {
-    windows: {
-        name: '@erden/reasoner-win32-x64-msvc',
-        digest: 'sha256:9e6b2487706fc5406becce8e3fbb01c1456243fb66f4519e2e00147906e37051',
-        executable: false,
-    },
-    linux: {
-        name: '@erden/reasoner-linux-x64-gnu',
-        digest: 'sha256:a5deaeecf3568101cfc981a2194f0af9edc1590c506f50b8b61cda4c4c1d571a',
-        executable: true,
-    },
-    'linux-arm64': {
-        name: '@erden/reasoner-linux-arm64-gnu',
-        digest: 'sha256:657a3b5f6e526404d1c87e5adb3e05eb800f7936702af433c093fcc21b0d5ace',
-        executable: true,
-    },
-    'darwin-arm64': {
-        name: '@erden/reasoner-darwin-arm64',
-        digest: 'sha256:5f4e5b2c6b123acadeccd606b20d8ed73a6a0c7da1dd285640e03d8b94cdfb9e',
-        executable: true,
-    },
+    windows: { key: 'win32:x64', executable: false },
+    linux: { key: 'linux:x64:glibc', executable: true },
+    'linux-arm64': { key: 'linux:arm64:glibc', executable: true },
+    'darwin-arm64': { key: 'darwin:arm64', executable: true },
 };
 if (!Object.hasOwn(platforms, expectedRuntime ?? '')) {
     throw new Error(`Expected one of ${Object.keys(platforms).join(', ')}`);
@@ -34,8 +21,9 @@ if (inactivePolicy !== 'must-be-absent' && inactivePolicy !== 'may-be-present') 
     throw new Error('Expected inactive package policy');
 }
 
-const expected = platforms[expectedRuntime];
-const version = '0.2.0+purrdf.0.12.0.dfb1df7';
+const anchor = QUALIFIED_REASONER_ARTIFACTS[platforms[expectedRuntime].key];
+const expected = { name: anchor.packageName, digest: anchor.sha256, executable: platforms[expectedRuntime].executable };
+const version = REASONER_TOOL.version;
 const nodeModules = resolve('node_modules');
 const resolverRoot = resolve(nodeModules, '@erden/reasoner-distribution');
 const platformRoot = resolve(nodeModules, expected.name);

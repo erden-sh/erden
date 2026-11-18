@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 
 import { describe, expect, test } from 'vitest';
 
-import { REASONER_RELEASED } from '../distribution/src/index.js';
+import { QUALIFIED_REASONER_ARTIFACTS, REASONER_RELEASED } from '../distribution/src/index.js';
 import { selectLicenses } from './license-policy.mjs';
 import type { LicensePolicy } from './license-policy.mjs';
 
@@ -145,8 +145,9 @@ describe('reasoner qualification evidence', () => {
       encoding: 'utf8',
       windowsHide: true,
     });
-    expect(JSON.parse(output)).toMatchObject({
-      qualificationSourceCommit: '8c6db97adaf46fe76e628036d36bf18de906ec4b',
+    // finalize-artifacts.mjs --check reports first; the closure's own result is the last line.
+    expect(JSON.parse(output.trimEnd().split('\n').at(-1) ?? '')).toMatchObject({
+      ...Object.fromEntries(Object.values(QUALIFIED_REASONER_ARTIFACTS).map((anchor) => [anchor.target, anchor.sha256])),
       status: 'closed',
     });
   });

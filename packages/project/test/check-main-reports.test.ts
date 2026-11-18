@@ -43,9 +43,11 @@ beforeAll(async () => {
     fixtures = await buildDifferentialFixtures(root);
 }, 180_000);
 
+// Removing the fixture tree checks every entry's ownership and mount on the way: about 12 s on a busy host, so it gets
+// the setup's budget, not the 10 s default.
 afterAll(() => {
     cleanupTestTempRoot(root);
-});
+}, 180_000);
 
 /** What one check ends with, as bytes: the report `erden check --json` prints, or the refusal's fields. */
 async function outcomeBytes(fixture: DifferentialFixture): Promise<string> {

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "packageName": "@erden/reasoner-win32-x64-msvc",
+  "packageVersion": "0.3.0+purrdf.0.12.0.dfb1df7",
+  "tool": {
+    "name": "erden-reasoner",
+    "version": "0.3.0+purrdf.0.12.0.dfb1df7",
+    "adapterDigest": "sha256:b923a50baa9b12d132a5d3088d7cc5ee54b6a3b8ade1a2126027720ace476001",
+    "calculusDigest": "sha256:fc444990f8c8c180df359a6beca8811fa3f4f2382f590fcb2f2a56957c19529c"
+  },
+  "runtime": {
+    "os": "win32",
+    "cpu": "x64"
+  },
+  "target": "x86_64-pc-windows-msvc",
+  "binary": {
+    "path": "bin/erden-reasoner.exe",
+    "bytes": 1738752,
+    "sha256": "sha256:aeb646e5fa3ee89fa8da0658a702e8897e2106543f901d5416c7a429420a99e9"
+  },
+  "knownAnswer": {
+    "fixture": "subclass-type",
+    "responseBytes": 2299,
+    "responseSha256": "sha256:9cfac696d367e884eb9fbf4c9b775d0395b82c93011a432a394e56bb241ce1f5"
+  }
+}

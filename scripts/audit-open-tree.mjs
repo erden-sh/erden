@@ -13,7 +13,9 @@
 //
 // In a Git working tree the audited files are the tracked ones; otherwise every file under the directory.
 //
-// - with `--history`, a commit of HEAD by anyone but the config's identity, unless the config lists it by SHA.
+// - with `--history`, a commit of HEAD, merges included, whose author or committer email is not a GitHub no-reply
+//   address, or whose message ends in a trailer or links an agent session, unless the config's historyExceptions
+//   waives that check for it by SHA.
 //
 // Usage: node scripts/audit-open-tree.mjs <directory> [--denylist <file>] [--paths <file>] [--commit] [--history]
 //        [--no-containers] [--report <file>]
@@ -221,8 +223,7 @@ export function commitFindings(directory, identity, patterns) {
         add('the commit has a parent');
     }
     const message = git(directory, ['log', '-1', '--format=%B', 'HEAD']).trimEnd();
-    const paragraphs = message.split(/\n\s*\n/u);
-    if (paragraphs.length > 1 && /^[A-Za-z][A-Za-z0-9-]*:\s/mu.test(paragraphs.at(-1) ?? '')) {
+    if (endsInTrailer(message)) {
         add('the commit message ends in a trailer');
     }
     for (const finding of scanText('.git/COMMIT_MESSAGE', message, patterns, [])) {
@@ -237,43 +238,56 @@ export function commitFindings(directory, identity, patterns) {
     return findings;
 }
 
-/** GitHub commits a rebase merge, keeping its author. */
-const GITHUB_COMMITTER = Object.freeze({ name: 'GitHub', email: 'noreply@github.com' });
+/**
+ * The commit emails the history accepts: GitHub's no-reply addresses (`<id>+<login>@` or `<login>@users.noreply.github.com`,
+ * a bot's login ending in `[bot]`) and `noreply@github.com`, the committer of GitHub's own merges.
+ */
+export const HISTORY_EMAIL =
+    /^(?:(?:\d+\+)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\[bot\])?@users\.noreply\.github\.com|noreply@github\.com)$/iu;
+
+/** A message that ends in a trailer paragraph (Co-authored-by, Signed-off-by and the like). */
+function endsInTrailer(message) {
+    const paragraphs = message.split(/\n\s*\n/u);
+    return paragraphs.length > 1 && /^[A-Za-z][A-Za-z0-9-]*:\s/mu.test(paragraphs.at(-1) ?? '');
+}
+
+/** An agent session link, anywhere in a message. */
+const SESSION_URL = /claude\.ai\/code\/session/iu;
 
 /**
- * The findings of the history check on a Git working tree: every commit of HEAD by the config's identity, committed by it
- * or by GitHub's rebase merge, with no trailer and a message that passes every pattern. Only the commits the config lists
- * by full SHA may keep another identity, because public history is not rewritten.
+ * The findings of the history check on a Git working tree. Every commit of HEAD, merge commits included, has an author
+ * and a committer email that HISTORY_EMAIL accepts (names are not checked), a message that does not end in a trailer
+ * and holds no agent session link, and a message that passes every pattern. Public history is not rewritten, so the
+ * config's historyExceptions may list a commit by full SHA with a reason, and waive for it exactly the checks the entry
+ * names: "email", "trailer" or "sessionUrl", each set to true.
  */
 export function historyFindings(directory, config, patterns) {
     const findings = [];
-    const excepted = new Set((config.historyIdentityExceptions ?? []).map((exception) => exception.sha));
+    const exceptions = new Map((config.historyExceptions ?? []).map((exception) => [exception.sha, exception]));
     for (const sha of git(directory, ['rev-list', 'HEAD']).split('\n').filter(Boolean)) {
         function add(hit) {
             findings.push({ check: 'history', path: sha, hit });
         }
-        const [authorName, authorEmail, committerName, committerEmail] = git(directory, [
-            'log',
-            '-1',
-            '--format=%an%n%ae%n%cn%n%ce',
-            sha,
-        ]).split('\n');
-        const { identity } = config;
-        if (!excepted.has(sha)) {
-            if (authorName !== identity.name || authorEmail !== identity.email) {
-                add(`the author is "${String(authorName)} <${String(authorEmail)}>"`);
-            }
-            const committer = [identity, GITHUB_COMMITTER].some(
-                (allowed) => allowed.name === committerName && allowed.email === committerEmail,
-            );
-            if (!committer) {
-                add(`the committer is "${String(committerName)} <${String(committerEmail)}>"`);
+        function waives(check) {
+            return exceptions.get(sha)?.[check] === true;
+        }
+        const [authorEmail, committerEmail] = git(directory, ['log', '-1', '--format=%ae%n%ce', sha]).split('\n');
+        if (!waives('email')) {
+            for (const [role, email] of [
+                ['author', authorEmail],
+                ['committer', committerEmail],
+            ]) {
+                if (!HISTORY_EMAIL.test(email ?? '')) {
+                    add(`the ${role} email "${String(email)}" is not a GitHub no-reply address`);
+                }
             }
         }
         const message = git(directory, ['log', '-1', '--format=%B', sha]).trimEnd();
-        const paragraphs = message.split(/\n\s*\n/u);
-        if (paragraphs.length > 1 && /^[A-Za-z][A-Za-z0-9-]*:\s/mu.test(paragraphs.at(-1) ?? '')) {
+        if (!waives('trailer') && endsInTrailer(message)) {
             add('the commit message ends in a trailer');
+        }
+        if (!waives('sessionUrl') && SESSION_URL.test(message)) {
+            add('the commit message links an agent session');
         }
         for (const finding of scanText('.git/COMMIT_MESSAGE', message, patterns, [])) {
             add(`the commit message holds "${finding.hit}" (${finding.check})`);

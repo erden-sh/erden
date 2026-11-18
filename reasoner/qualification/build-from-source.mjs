@@ -1,7 +1,7 @@
-// Builds this Linux host's erden-reasoner from a committed source the way the mint does (reasoner-build.yml and
+// Builds this host's erden-reasoner from a committed source the way the mint does (reasoner-build.yml and
 // verify-binary-reproducible.mjs): two `git archive` exports of the commit, each built with `cargo build --release
-// --locked` in the digest-pinned `rust` builder image (glibc 2.36, the mint's baseline), the recorded
-// SOURCE_DATE_EPOCH and path remaps. It installs the binary only when both builds are byte-identical and it passes the
+// --locked` in the digest-pinned `rust` builder image on Linux (glibc 2.36, the mint's baseline) or with rustup 1.96.0
+// on Windows x64 and macOS arm64, the recorded SOURCE_DATE_EPOCH and path remaps. It installs the binary only when both builds are byte-identical and it passes the
 // distribution's known-answer check.
 //
 // Until the tools release mints this platform (release.yml) there is no pin to verify against, and
@@ -42,12 +42,10 @@ const repository = resolve(reasoner, '..');
 
 /** Where the source build is installed (git-ignored, inside the Docker build context). */
 export const SOURCE_BUILD_DIRECTORY = join(reasoner, 'source-build');
-const LINUX_TARGETS = Object.freeze({ x64: 'x86_64-unknown-linux-gnu', arm64: 'aarch64-unknown-linux-gnu' });
-
-/** The Linux target this host builds natively in the builder image. */
-export function hostLinuxTarget() {
-  const target = process.platform === 'linux' ? LINUX_TARGETS[process.arch] : undefined;
-  if (target === undefined) throw new Error(`The reasoner source build runs on a Linux x64 or arm64 host, not ${process.platform} ${process.arch}`);
+/** The target this host builds natively: in the builder image on Linux, with rustup on Windows and macOS. */
+export function hostTarget() {
+  const target = PLATFORMS.find((platform) => platform.runtime.os === process.platform && platform.runtime.cpu === process.arch)?.target;
+  if (target === undefined) throw new Error(`The reasoner source build runs on Linux x64 or arm64, Windows x64 or macOS arm64, not ${process.platform} ${process.arch}`);
   return target;
 }
 
@@ -73,7 +71,7 @@ export function buildInputs(commit) {
  * The installed source build of `target` when it was built from this checkout's build inputs (HEAD) and its bytes are
  * the recorded ones; otherwise an error that says how to build it.
  */
-export function readInstalledSourceBuild(target = hostLinuxTarget()) {
+export function readInstalledSourceBuild(target = hostTarget()) {
   const { binary, record: recordPath } = paths(target);
   const rebuild = `run \`pnpm run reasoner:build:linux\` (node reasoner/qualification/build-from-source.mjs)`;
   if (!existsSync(binary) || !existsSync(recordPath)) {
@@ -96,7 +94,7 @@ function pinnedPackage(target) {
   const platform = PLATFORMS.find((entry) => entry.target === target);
   const anchor = QUALIFIED_REASONER_ARTIFACTS[platform.key];
   if (anchor.sha256 === null) return undefined;
-  return { anchor, binary: join(reasoner, platform.directory, anchor.binaryPath) };
+  return { anchor, directory: join(reasoner, platform.directory), binary: join(reasoner, platform.directory, anchor.binaryPath) };
 }
 
 function matchesPin(path, anchor) {
@@ -119,7 +117,7 @@ function installPinned(target, binary) {
 
 function main() {
   const { values } = parseArgs({ options: { commit: { type: 'string' }, check: { type: 'boolean', default: false } } });
-  const target = hostLinuxTarget();
+  const target = hostTarget();
   if (values.check) {
     const { record } = readInstalledSourceBuild(target);
     const pinned = pinnedPackage(target);
@@ -169,7 +167,13 @@ function main() {
     copyFileSync(a.binary, binary);
     chmodSync(binary, 0o755);
     installPinned(target, binary);
-    const knownAnswer = runBundledReasonerKnownAnswer({ sourceBuild: binary });
+    // A pinned build answers from its platform package, located directly: a checkout without a workspace install (the
+    // macOS CI job) has no node_modules to resolve it from.
+    const pinnedInstall = pinnedPackage(target);
+    const knownAnswer =
+      pinnedInstall === undefined
+        ? runBundledReasonerKnownAnswer({ sourceBuild: binary })
+        : runBundledReasonerKnownAnswer({ locatePackage: () => pinnedInstall.directory });
     const record = {
       schemaVersion: 1,
       kind: 'unreleased-source-build',
@@ -181,8 +185,7 @@ function main() {
       toolchain: RUST_TOOLCHAIN,
       host: { platform: process.platform, arch: process.arch },
       target,
-      builderImage: LINUX_BUILDER_IMAGE,
-      builderPlatform: a.plan.dockerPlatform,
+      ...(a.plan.kind === 'docker' ? { builderImage: LINUX_BUILDER_IMAGE, builderPlatform: a.plan.dockerPlatform } : {}),
       rustflags: a.plan.rustflagsRecord,
       runs,
       knownAnswer,

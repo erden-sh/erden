@@ -3,11 +3,15 @@ import { chmodSync, cpSync, mkdirSync, realpathSync, rmSync, symlinkSync } from 
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { QUALIFIED_REASONER_ARTIFACTS, REASONER_TOOL } from './src/index.js';
+
 assert.equal(process.platform, 'linux');
 const resolverRoot = realpathSync(resolve('node_modules/@erden/reasoner-distribution'));
 const sourcePackage = realpathSync(resolve('node_modules/@erden/reasoner-linux-x64-gnu'));
 const distribution = await import(pathToFileURL(resolve(resolverRoot, 'src/index.js')).href);
 const runtime = { platform: 'linux', arch: 'x64', libc: 'glibc' };
+// This checkout's pins for the package under test.
+const anchor = QUALIFIED_REASONER_ARTIFACTS['linux:x64:glibc'];
 
 function expectCode(directory, code) {
     assert.throws(
@@ -28,11 +32,11 @@ async function expectFixtureCode(directory) {
         availability: 'unavailable',
         expectedPlatformPackage: '@erden/reasoner-linux-x64-gnu',
         actualPlatformPackage: '@erden/reasoner-linux-x64-gnu',
-        packageVersion: '0.2.0+purrdf.0.12.0.dfb1df7',
-        toolVersion: '0.2.0+purrdf.0.12.0.dfb1df7',
+        packageVersion: REASONER_TOOL.version,
+        toolVersion: REASONER_TOOL.version,
         path: undefined,
-        size: 1556160,
-        digest: 'sha256:a5deaeecf3568101cfc981a2194f0af9edc1590c506f50b8b61cda4c4c1d571a',
+        size: anchor.bytes,
+        digest: anchor.sha256,
         target: 'x86_64-unknown-linux-gnu',
         requiredTool: undefined,
         failureCode: 'SELF_TEST_FAILED',

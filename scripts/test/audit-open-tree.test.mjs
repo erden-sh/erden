@@ -241,33 +241,134 @@ test('the config pins both tool images by version and digest, and every allowed 
     assert.equal(CONFIG.maxFileBytes, 5_000_000);
 });
 
-test('the history check accepts the identity and listed commits, and refuses any other identity', () => {
-    const good = gitRepository({ 'a.txt': 'a\n' }, 'first');
-    const someone = { name: 'Someone', email: 'someone@users.noreply.github.com' };
-    const stranger = gitRepository({ 'a.txt': 'a\n' }, 'first', someone);
+/** Runs git in `directory` as `identity` (author and committer unless `committer` is given); returns its output. */
+function gitAs(directory, identity, args, committer = identity) {
+    const result = spawnSync('git', ['-C', directory, '-c', 'commit.gpgsign=false', ...args], {
+        encoding: 'utf8',
+        env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: identity.name,
+            GIT_AUTHOR_EMAIL: identity.email,
+            GIT_COMMITTER_NAME: committer.name,
+            GIT_COMMITTER_EMAIL: committer.email,
+            GIT_CONFIG_GLOBAL: '/dev/null',
+            GIT_CONFIG_NOSYSTEM: '1',
+        },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+}
+
+/** The history findings of a one-commit repository by `identity` with `message`, under `exceptions`. */
+function historyHits(message, identity = IDENTITY, exceptions = []) {
+    const { directory } = gitRepository({ 'a.txt': 'a\n' }, message, identity);
     try {
-        assert.deepEqual(historyFindings(good.directory, CONFIG, []), []);
-        const sha = spawnSync('git', ['-C', stranger.directory, 'rev-parse', 'HEAD'], {
-            encoding: 'utf8',
-        }).stdout.trim();
-        assert.deepEqual(
-            historyFindings(stranger.directory, CONFIG, []).map((finding) => finding.hit),
-            [`the author is "Someone <${someone.email}>"`, `the committer is "Someone <${someone.email}>"`],
-        );
-        assert.deepEqual(
-            historyFindings(
-                stranger.directory,
-                { ...CONFIG, historyIdentityExceptions: [{ sha, reason: 'listed' }] },
-                [],
-            ),
-            [],
-        );
-        assert.equal(
-            historyFindings(stranger.directory, { ...CONFIG, historyIdentityExceptions: [{ sha: 'x' }] }, []).length,
-            2,
-        );
+        const sha = gitAs(directory, identity, ['rev-parse', 'HEAD']);
+        const resolved = typeof exceptions === 'function' ? exceptions(sha) : exceptions;
+        return historyFindings(directory, { ...CONFIG, historyExceptions: resolved }, []).map((finding) => finding.hit);
     } finally {
-        rmSync(good.directory, { recursive: true, force: true });
-        rmSync(stranger.directory, { recursive: true, force: true });
+        rmSync(directory, { recursive: true, force: true });
+    }
+}
+
+test('the history check passes any name with a GitHub no-reply email, and refuses any other email', () => {
+    assert.deepEqual(historyHits('first', { name: 'Someone Else', email: '123+someone@users.noreply.github.com' }), []);
+    assert.deepEqual(historyHits('first', { name: 'A', email: 'someone@users.noreply.github.com' }), []);
+    assert.deepEqual(
+        historyHits('first', { name: 'A', email: '41898282+github-actions[bot]@users.noreply.github.com' }),
+        [],
+    );
+    assert.deepEqual(historyHits('first', { name: 'GitHub', email: 'NoReply@GitHub.com' }), []);
+    assert.deepEqual(historyHits('first', { name: 'A', email: 'someone@example.com' }), [
+        'the author email "someone@example.com" is not a GitHub no-reply address',
+        'the committer email "someone@example.com" is not a GitHub no-reply address',
+    ]);
+    for (const email of ['noreply@example.com', 'someone@noreply.github.com', 'x@users.noreply.github.com.example']) {
+        assert.equal(historyHits('first', { name: 'A', email }).length, 2, email);
+    }
+});
+
+test('the history check refuses a trailer, and an agent session link anywhere in the message', () => {
+    assert.deepEqual(historyHits('first\n\nbody\n\nCo-authored-by: A <1+a@users.noreply.github.com>'), [
+        'the commit message ends in a trailer',
+    ]);
+    assert.deepEqual(historyHits('first\n\nsee https://claude.ai/code/session_x for how\n\nmore'), [
+        'the commit message links an agent session',
+    ]);
+    assert.deepEqual(historyHits('first\n\nthe last paragraph has a colon: mid-line'), []);
+});
+
+test('the history check passes a GitHub merge commit', () => {
+    const { directory } = gitRepository({ 'a.txt': 'a\n' }, 'first');
+    try {
+        const contributor = { name: 'Someone', email: '7+someone@users.noreply.github.com' };
+        gitAs(directory, IDENTITY, ['switch', '-q', '-c', 'topic']);
+        writeFileSync(join(directory, 'b.txt'), 'b\n');
+        gitAs(directory, contributor, ['add', '-A']);
+        gitAs(directory, contributor, ['commit', '-q', '-m', 'add b']);
+        gitAs(directory, IDENTITY, ['switch', '-q', 'main']);
+        const github = { name: 'GitHub', email: 'noreply@github.com' };
+        gitAs(
+            directory,
+            contributor,
+            ['merge', '-q', '--no-ff', '-m', 'Merge pull request #1 from someone/topic\n\nadd b', 'topic'],
+            github,
+        );
+        assert.equal(gitAs(directory, IDENTITY, ['rev-list', '--merges', 'HEAD']).split('\n').length, 1);
+        assert.deepEqual(historyFindings(directory, { ...CONFIG, historyExceptions: [] }, []), []);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test('a history exception waives exactly the checks it names, for its commit only', () => {
+    const message = 'first\n\nhttps://claude.ai/code/session_x\n\nKey: value';
+    const stranger = { name: 'A', email: 'someone@example.com' };
+    const all = [
+        'the author email "someone@example.com" is not a GitHub no-reply address',
+        'the committer email "someone@example.com" is not a GitHub no-reply address',
+        'the commit message ends in a trailer',
+        'the commit message links an agent session',
+    ];
+    assert.deepEqual(historyHits(message, stranger), all);
+    assert.deepEqual(
+        historyHits(message, stranger, (sha) => [{ sha, reason: 'listed' }]),
+        all,
+    );
+    assert.deepEqual(
+        historyHits(message, stranger, [{ sha: 'x', reason: 'another', email: true, trailer: true, sessionUrl: true }]),
+        all,
+    );
+    assert.deepEqual(
+        historyHits(message, stranger, (sha) => [{ sha, reason: 'listed', trailer: 'yes' }]),
+        all,
+    );
+    assert.deepEqual(
+        historyHits(message, stranger, (sha) => [{ sha, reason: 'listed', email: true }]),
+        all.slice(2),
+    );
+    assert.deepEqual(
+        historyHits(message, stranger, (sha) => [{ sha, reason: 'listed', trailer: true }]),
+        [all[0], all[1], all[3]],
+    );
+    assert.deepEqual(
+        historyHits(message, stranger, (sha) => [{ sha, reason: 'listed', sessionUrl: true }]),
+        all.slice(0, 3),
+    );
+    assert.deepEqual(
+        historyHits(message, stranger, (sha) => [
+            { sha, reason: 'listed', email: true, trailer: true, sessionUrl: true },
+        ]),
+        [],
+    );
+});
+
+test('every history exception gives a reason and waives at least one named check', () => {
+    for (const entry of CONFIG.historyExceptions) {
+        assert.match(entry.sha, /^[0-9a-f]{40}$/u);
+        assert.ok(typeof entry.reason === 'string' && entry.reason.length > 10, JSON.stringify(entry));
+        const waived = ['email', 'trailer', 'sessionUrl'].filter((check) => entry[check] === true);
+        assert.ok(waived.length > 0, JSON.stringify(entry));
+        assert.deepEqual(Object.keys(entry).sort(), ['reason', 'sha', ...waived].sort(), JSON.stringify(entry));
     }
 });

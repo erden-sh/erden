@@ -5,14 +5,12 @@
         "name": "Ingenio Ventures Inc",
         "email": "8313760+cbnsndwch@users.noreply.github.com"
     },
-    "historyIdentityExceptions": [
+    "historyExceptions": [
         {
-            "sha": "a65794c4d925c46d5ec31b5916d785b8e307010a",
-            "reason": "the public initial commit, under the identity before the first release; public history is not rewritten"
-        },
-        {
-            "sha": "e937a6ffc615b97723b27d3eeab60eef11e0d719",
-            "reason": "a merged pull request from before the first release; public history is not rewritten"
+            "sha": "60aa4557904ae9c44f6621b4e780b841eaddfc18",
+            "reason": "a squash merge whose message ended in a trailer with a session link; public history is not rewritten",
+            "trailer": true,
+            "sessionUrl": true
         }
     ],
     "images": {
