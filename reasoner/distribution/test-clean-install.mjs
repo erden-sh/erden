@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { skipUntilReasonerRelease } from '../../scripts/lib/reasoner-release.mjs';
 import { cleanupTestTempRoot, makeTestTempRoot } from '../../scripts/lib/test-temp-root.mjs';
 
+import { REASONER_TOOL } from './src/index.js';
+
 skipUntilReasonerRelease(`reasoner clean install (${String(process.argv[2])})`);
 
 const mode = process.argv[2];
@@ -54,18 +56,13 @@ try {
         type: 'module',
         packageManager: 'pnpm@10.15.0',
         dependencies: {
-            '@erden/reasoner-distribution':
-                'file:artifacts/erden-reasoner-distribution-0.2.0+purrdf.0.12.0.dfb1df7.tgz',
+            '@erden/reasoner-distribution': `file:artifacts/erden-reasoner-distribution-${REASONER_TOOL.version}.tgz`,
         },
         optionalDependencies: {
-            '@erden/reasoner-darwin-arm64':
-                'file:artifacts/erden-reasoner-darwin-arm64-0.2.0+purrdf.0.12.0.dfb1df7.tgz',
-            '@erden/reasoner-linux-arm64-gnu':
-                'file:artifacts/erden-reasoner-linux-arm64-gnu-0.2.0+purrdf.0.12.0.dfb1df7.tgz',
-            '@erden/reasoner-linux-x64-gnu':
-                'file:artifacts/erden-reasoner-linux-x64-gnu-0.2.0+purrdf.0.12.0.dfb1df7.tgz',
-            '@erden/reasoner-win32-x64-msvc':
-                'file:artifacts/erden-reasoner-win32-x64-msvc-0.2.0+purrdf.0.12.0.dfb1df7.tgz',
+            '@erden/reasoner-darwin-arm64': `file:artifacts/erden-reasoner-darwin-arm64-${REASONER_TOOL.version}.tgz`,
+            '@erden/reasoner-linux-arm64-gnu': `file:artifacts/erden-reasoner-linux-arm64-gnu-${REASONER_TOOL.version}.tgz`,
+            '@erden/reasoner-linux-x64-gnu': `file:artifacts/erden-reasoner-linux-x64-gnu-${REASONER_TOOL.version}.tgz`,
+            '@erden/reasoner-win32-x64-msvc': `file:artifacts/erden-reasoner-win32-x64-msvc-${REASONER_TOOL.version}.tgz`,
         },
     };
     writeFileSync(resolve(temporary, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`);
