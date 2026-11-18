@@ -201,7 +201,11 @@ function record(platform, digest = 'a') {
         platform,
         sourceCommit: 'c'.repeat(40),
         sourceDateEpoch: 1_700_000_000,
-        node: { version: '24.17.0' },
+        node: {
+            version: '24.17.0',
+            file: `node-v24.17.0-${platform}`,
+            sha256: `sha256:${platform.length.toString(16).repeat(64)}`,
+        },
         archive: { file: archiveName('1.0.0', platform), bytes: 10, sha256: `sha256:${digest.repeat(64)}` },
         engines: { reasoner: { sha256: `sha256:${'1'.repeat(64)}` }, shacl: { sha256: `sha256:${'2'.repeat(64)}` } },
     };
@@ -237,6 +241,15 @@ test('a release accepts only the pinned archives and engines, on all four platfo
     assert.throws(
         () => pinsOf({ ...records, 'linux-x64': { ...records['linux-x64'], sourceDateEpoch: 1 } }),
         /disagree on sourceDateEpoch/u,
+    );
+    assert.equal(pins.node, '24.17.0');
+    assert.throws(
+        () =>
+            pinsOf({
+                ...records,
+                'linux-x64': { ...records['linux-x64'], node: { ...records['linux-x64'].node, version: '24.18.0' } },
+            }),
+        /disagree on node/u,
     );
 });
 
