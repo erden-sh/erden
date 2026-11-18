@@ -229,7 +229,7 @@ function main() {
             `${JSON.stringify({ platform: record.platform, container: values.container, ...summary })}\n`,
         );
     } finally {
-        rmSync(work, { recursive: true, force: true });
+        rmSync(work, { recursive: true, force: true, maxRetries: 5 });
     }
 }
 

@@ -69,6 +69,6 @@ export function smokeTest(root, demo) {
             pack: 'passed',
         };
     } finally {
-        rmSync(temporary, { recursive: true, force: true });
+        rmSync(temporary, { recursive: true, force: true, maxRetries: 5 });
     }
 }

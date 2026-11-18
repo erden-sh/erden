@@ -59,11 +59,12 @@ function run(command, args, options = {}) {
 /**
  * The store the workspace's install filled, as a `--store-dir` argument. pnpm keeps a store per drive or filesystem, so
  * an export in a temporary directory elsewhere (C: on a Windows runner whose checkout and store are on D:) would
- * otherwise look in an empty store and fail offline.
+ * otherwise look in an empty store and fail offline. On Windows `run` passes its command line through cmd unquoted,
+ * so a store path with spaces is not supported there.
  */
 function workspaceStoreArguments() {
     const store = dirname(run('pnpm', ['store', 'path'], { cwd: repository }).trim());
-    return ['--store-dir', windows && /\s/u.test(store) ? `"${store}"` : store];
+    return ['--store-dir', store];
 }
 
 function git(...args) {
@@ -298,7 +299,7 @@ async function main() {
         process.stdout.write(`${name}: ${runs[0].sha256} (${String(runs[0].bytes)} bytes); both builds match\n`);
     } finally {
         if (existsSync(temporary)) {
-            rmSync(temporary, { recursive: true, force: true });
+            rmSync(temporary, { recursive: true, force: true, maxRetries: 5 });
         }
     }
 }

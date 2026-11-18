@@ -32,7 +32,9 @@ try {
     $programs = Join-Path (Join-Path $localData 'Programs') 'Erden'
     $target = Join-Path $programs $version
     New-Item -ItemType Directory -Force -Path $programs | Out-Null
-    $work = Join-Path $programs ('.install.' + [Guid]::NewGuid().ToString('N'))
+    # Short staging names: the archive's deepest entry is extracted below them, and Windows PowerShell 5.1's
+    # Expand-Archive may stop at the 260-character path limit.
+    $work = Join-Path $programs ('.install.' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $work | Out-Null
 
     $download = Join-Path $work $win32X64File
@@ -55,7 +57,7 @@ try {
     if ($hash -ne $win32X64Sha256) {
         Fail "the archive's SHA-256 is not the one $win32X64File was released with; nothing was installed"
     }
-    $extract = Join-Path $work 'extract'
+    $extract = Join-Path $work 'x'
     Expand-Archive -LiteralPath $download -DestinationPath $extract
     $unpacked = Join-Path $extract "erden-$version-win32-x64"
     if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $unpacked 'bin') 'erden.cmd') -PathType Leaf)) {

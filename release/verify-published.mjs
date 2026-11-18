@@ -101,7 +101,9 @@ function main(values) {
         const version = values.tag.replace(/^v/u, '');
         const platform = platformName();
         const base = `${REPOSITORY}/${values.tag}`;
-        const work = mkdtempSync(join(realpathSync(tmpdir()), 'erden-verify-published-'));
+        // The native real path expands a Windows 8.3 short name, which `erden init` refuses as an aliased parent. The
+        // short prefix keeps the Windows install, extracted under home\AppData\Local, within the 260-character limit.
+        const work = mkdtempSync(join(realpathSync.native(tmpdir()), 'erden-vp-'));
         const scriptName = process.platform === 'win32' ? 'install.ps1' : 'install.sh';
         const archiveName = `erden-${version}-${platform}.${process.platform === 'win32' ? 'zip' : 'tar.gz'}`;
         const sums = (await download(`${base}/SHA256SUMS`)).toString('utf8');

@@ -13,7 +13,7 @@ import {
     writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, win32 } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { writeArchive } from '../../release/lib/archive.mjs';
@@ -293,6 +293,24 @@ describe('install.ps1', { skip: POWERSHELL === undefined ? 'no PowerShell on thi
         } finally {
             rmSync(context.directory, { recursive: true, force: true });
         }
+    });
+});
+
+describe('install.ps1 on long Windows paths', () => {
+    it('stages the archive under names short enough for the 260-character path limit', () => {
+        const template = readFileSync(join(root, 'release', 'install.template.ps1'), 'utf8');
+        const work =
+            /\$work = Join-Path \$programs \('([^']+)' \+ \[Guid\]::NewGuid\(\)\.ToString\('N'\)\.Substring\(0, (\d+)\)\)/u.exec(
+                template,
+            );
+        const extract = /\$extract = Join-Path \$work '([^']+)'/u.exec(template);
+        assert.ok(work !== null && extract !== null, 'install.ps1 names its staging directories');
+        // A 20-character user name, and a budget for the archive's deepest entry: today it is 134 characters,
+        // erden-<version>-win32-x64/THIRD-PARTY-NOTICES/erden-reasoner/licenses/<sha256>.txt.
+        const local = win32.join('C:\\Users', 'u'.repeat(20), 'AppData', 'Local');
+        const deepestEntry = 150;
+        const staging = win32.join(local, 'Programs', 'Erden', `${work[1]}${'0'.repeat(Number(work[2]))}`, extract[1]);
+        assert.ok(staging.length + 1 + deepestEntry < 260, `${staging} leaves too little of the path limit`);
     });
 });
 
