@@ -11,7 +11,8 @@
 // `run` and `compare` need nothing but Node, so they run on every platform's runner without a workspace install.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -105,7 +106,7 @@ function runRequests(binary, requestsDir, out) {
         value.requiredTool.executableDigest = digest;
         const input = `${JSON.stringify(value)}\n`;
         const bytes = [0, 1].map(() => {
-            const child = spawnSync(binary, [], { input, maxBuffer: 256 * 1024 * 1024, timeout: 600_000, windowsHide: true });
+            const child = spawnWithStdinFile(binary, input, { maxBuffer: 256 * 1024 * 1024, timeout: 600_000, windowsHide: true });
             if (child.status !== 0 || child.stderr.length !== 0) {
                 throw new Error(`${request.id}: exit ${String(child.status)} ${child.stderr.toString('utf8')}`);
             }
@@ -150,6 +151,25 @@ function compare(answersRoot, out) {
     if (!summary.identical) {
         console.error(differences.slice(0, 50).join('\n'));
         process.exit(1);
+    }
+}
+
+/**
+ * Runs the engine with `input` as its standard input, read from a file: the child gets an open descriptor of it, so no
+ * pipe write happens on this side. On macOS runners a request over 64 KiB, the most a pipe buffer holds, sometimes
+ * stalled the pipe hand-off until the timeout; a file has no such hand-off. The engine reads its stdin to end of file
+ * either way.
+ */
+function spawnWithStdinFile(binary, input, options) {
+    const directory = mkdtempSync(join(tmpdir(), 'erden-determinism-'));
+    const file = join(directory, 'request');
+    writeFileSync(file, input);
+    const descriptor = openSync(file, 'r');
+    try {
+        return spawnSync(binary, [], { ...options, stdio: [descriptor, 'pipe', 'pipe'] });
+    } finally {
+        closeSync(descriptor);
+        rmSync(directory, { recursive: true, force: true });
     }
 }
 

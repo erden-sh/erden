@@ -25,8 +25,8 @@
 // Wall times are recorded but are not part of an answer.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { arch, cpus, platform, release } from 'node:os';
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { arch, cpus, platform, release, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
@@ -142,10 +142,28 @@ function readRequestSet(directory) {
   return { manifest, manifestSha256: sha256(readFileSync(join(directory, 'manifest.json'))), requests };
 }
 
+/**
+ * Runs the engine with `input` as its standard input, read from a file: the child gets an open descriptor of it, so no
+ * pipe write happens on this side. On macOS runners a request over 64 KiB, the most a pipe buffer holds, sometimes
+ * stalled the pipe hand-off until the timeout; a file has no such hand-off. The engine reads its stdin to end of file
+ * either way.
+ */
+function spawnWithStdinFile(binary, input, options) {
+  const directory = mkdtempSync(join(tmpdir(), 'erden-determinism-'));
+  const file = join(directory, 'request');
+  writeFileSync(file, input);
+  const descriptor = openSync(file, 'r');
+  try {
+    return spawnSync(binary, [], { ...options, stdio: [descriptor, 'pipe', 'pipe'] });
+  } finally {
+    closeSync(descriptor);
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 function runOnce(binary, wire, timeoutMs) {
   const started = performance.now();
-  const child = spawnSync(binary, [], {
-    input: wire,
+  const child = spawnWithStdinFile(binary, wire, {
     maxBuffer: 512 * 1024 * 1024,
     timeout: timeoutMs,
     windowsHide: true,
