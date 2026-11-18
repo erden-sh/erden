@@ -7,6 +7,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# Only to enable blake3's `pure` feature for purrdf's use of it (see the workspace manifest).
+blake3.workspace = true
 purrdf-core.workspace = true
 purrdf-entail.workspace = true
 serde.workspace = true

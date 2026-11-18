@@ -160,34 +160,13 @@ importers:
         specifier: 8.20.0
         version: 8.20.0
 
-  reasoner/darwin-arm64: {}
-
-  reasoner/distribution:
-    optionalDependencies:
-      '@erden/reasoner-darwin-arm64':
-        specifier: workspace:0.3.0+purrdf.0.12.0.dfb1df7
-        version: link:../darwin-arm64
-      '@erden/reasoner-linux-arm64-gnu':
-        specifier: workspace:0.3.0+purrdf.0.12.0.dfb1df7
-        version: link:../linux-arm64-gnu
-      '@erden/reasoner-linux-x64-gnu':
-        specifier: workspace:0.3.0+purrdf.0.12.0.dfb1df7
-        version: link:../linux-x64-gnu
-      '@erden/reasoner-win32-x64-msvc':
-        specifier: workspace:0.3.0+purrdf.0.12.0.dfb1df7
-        version: link:../win32-x64-msvc
-
-  reasoner/linux-arm64-gnu: {}
-
-  reasoner/linux-x64-gnu: {}
+  reasoner/distribution: {}
 
   reasoner/protocol:
     dependencies:
       effect:
         specifier: 4.0.0-rc.111
         version: 4.0.0-rc.111
-
-  reasoner/win32-x64-msvc: {}
 
   shacl/darwin-arm64: {}
 
