@@ -271,3 +271,28 @@ test('the history check accepts the identity and listed commits, and refuses any
         rmSync(stranger.directory, { recursive: true, force: true });
     }
 });
+
+test('the history check refuses a trailer unless the commit is listed with "trailer": true', () => {
+    const trailed = gitRepository({ 'a.txt': 'a\n' }, 'first\n\nbody\n\nKey: value');
+    try {
+        const sha = spawnSync('git', ['-C', trailed.directory, 'rev-parse', 'HEAD'], {
+            encoding: 'utf8',
+        }).stdout.trim();
+        function hits(exception) {
+            return historyFindings(
+                trailed.directory,
+                { ...CONFIG, historyIdentityExceptions: exception === undefined ? [] : [exception] },
+                [],
+            ).map((finding) => finding.hit);
+        }
+        assert.deepEqual(hits(undefined), ['the commit message ends in a trailer']);
+        assert.deepEqual(hits({ sha, reason: 'listed' }), ['the commit message ends in a trailer']);
+        assert.deepEqual(hits({ sha, reason: 'listed', trailer: 'yes' }), ['the commit message ends in a trailer']);
+        assert.deepEqual(hits({ sha: 'x', reason: 'another', trailer: true }), [
+            'the commit message ends in a trailer',
+        ]);
+        assert.deepEqual(hits({ sha, reason: 'listed', trailer: true }), []);
+    } finally {
+        rmSync(trailed.directory, { recursive: true, force: true });
+    }
+});

@@ -13,6 +13,19 @@
         {
             "sha": "e937a6ffc615b97723b27d3eeab60eef11e0d719",
             "reason": "a merged pull request from before the first release; public history is not rewritten"
+        },
+        {
+            "sha": "4e0196afddc6e776810795dc7d2ca6df99e5b90d",
+            "reason": "committed before the first release under the maintainer's GitHub account name; public history is not rewritten"
+        },
+        {
+            "sha": "1dc6fd0530ab624054874668b9d8ad09bf84e1de",
+            "reason": "committed before the first release under the maintainer's GitHub account name; public history is not rewritten"
+        },
+        {
+            "sha": "60aa4557904ae9c44f6621b4e780b841eaddfc18",
+            "reason": "merged by squash, under the maintainer's GitHub account name and with a session trailer, before the rebase-only rule was enforced; public history is not rewritten",
+            "trailer": true
         }
     ],
     "images": {

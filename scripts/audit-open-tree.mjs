@@ -243,11 +243,12 @@ const GITHUB_COMMITTER = Object.freeze({ name: 'GitHub', email: 'noreply@github.
 /**
  * The findings of the history check on a Git working tree: every commit of HEAD by the config's identity, committed by it
  * or by GitHub's rebase merge, with no trailer and a message that passes every pattern. Only the commits the config lists
- * by full SHA may keep another identity, because public history is not rewritten.
+ * by full SHA may keep another identity, and only those of them whose entry says "trailer": true may end in a trailer,
+ * because public history is not rewritten.
  */
 export function historyFindings(directory, config, patterns) {
     const findings = [];
-    const excepted = new Set((config.historyIdentityExceptions ?? []).map((exception) => exception.sha));
+    const excepted = new Map((config.historyIdentityExceptions ?? []).map((exception) => [exception.sha, exception]));
     for (const sha of git(directory, ['rev-list', 'HEAD']).split('\n').filter(Boolean)) {
         function add(hit) {
             findings.push({ check: 'history', path: sha, hit });
@@ -272,7 +273,8 @@ export function historyFindings(directory, config, patterns) {
         }
         const message = git(directory, ['log', '-1', '--format=%B', sha]).trimEnd();
         const paragraphs = message.split(/\n\s*\n/u);
-        if (paragraphs.length > 1 && /^[A-Za-z][A-Za-z0-9-]*:\s/mu.test(paragraphs.at(-1) ?? '')) {
+        const trailerExcepted = excepted.get(sha)?.trailer === true;
+        if (!trailerExcepted && paragraphs.length > 1 && /^[A-Za-z][A-Za-z0-9-]*:\s/mu.test(paragraphs.at(-1) ?? '')) {
             add('the commit message ends in a trailer');
         }
         for (const finding of scanText('.git/COMMIT_MESSAGE', message, patterns, [])) {
