@@ -26,7 +26,7 @@ jobs:
               with:
                   node-version-file: .node-version
             - run: node scripts/audit-open-tree.mjs .
-            # A pull request's head is GitHub's merge of it, so the history is checked once it lands.
-            - name: Check every commit's identity
-              if: github.event_name == 'push'
+            # Every commit's emails and message, on pull requests too, so a violation fails before it lands. A pull
+            # request's HEAD is GitHub's merge of it, committed by noreply@github.com, over the branch's own commits.
+            - name: Check every commit's emails and message
               run: node scripts/audit-open-tree.mjs . --history --no-containers
