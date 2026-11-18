@@ -32,7 +32,7 @@ another. It installs for the current user, with no administrator rights, to `~/.
 `erden` and `den` linked into `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\Erden\<version>\`).
 
 ```bash
-curl -fsSLO https://github.com/cbnsndwch/erden/releases/latest/download/install.sh
+curl -fsSLO https://github.com/erden-sh/erden/releases/latest/download/install.sh
 sh install.sh
 ```
 

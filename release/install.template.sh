@@ -10,7 +10,7 @@
 set -eu
 
 version='@@VERSION@@'
-release_url="https://github.com/cbnsndwch/erden/releases/download/v$version"
+release_url="https://github.com/erden-sh/erden/releases/download/v$version"
 @@ARCHIVES@@
 
 fail() {

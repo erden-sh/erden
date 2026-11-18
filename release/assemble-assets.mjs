@@ -62,7 +62,7 @@ function main() {
             'Linux x64 and arm64 (glibc) and macOS on Apple silicon:',
             '',
             '```sh',
-            `curl -fsSLO https://github.com/cbnsndwch/erden/releases/download/v${pins.version}/install.sh`,
+            `curl -fsSLO https://github.com/erden-sh/erden/releases/download/v${pins.version}/install.sh`,
             'sh install.sh',
             '```',
             '',

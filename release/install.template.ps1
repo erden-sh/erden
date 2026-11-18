@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3
 
 $version = '@@VERSION@@'
-$releaseUrl = "https://github.com/cbnsndwch/erden/releases/download/v$version"
+$releaseUrl = "https://github.com/erden-sh/erden/releases/download/v$version"
 @@ARCHIVES@@
 
 function Fail([string]$message) {

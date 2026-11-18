@@ -328,7 +328,7 @@ test('the release workflow pins every action, and only its publish job, in the p
             const publishes = evaluateGuard.bind(undefined, job.if);
             const tag = {
                 event_name: 'push',
-                repository: 'cbnsndwch/erden',
+                repository: 'erden-sh/erden',
                 event: { repository: { private: false } },
             };
             assert.equal(publishes(tag), true);

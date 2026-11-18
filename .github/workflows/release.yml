@@ -12,7 +12,7 @@ name: release
 #   epoch, and refuses to publish unless every engine binary and every archive matches the committed pins byte for
 #   byte. Only then does the publish job, the one job with contents: write, create a draft release with the four
 #   archives, SHA256SUMS, install.sh and install.ps1, check the uploaded assets' digests and publish it. It runs only
-#   in the public repository (named cbnsndwch/erden and not private).
+#   in the public repository (named erden-sh/erden and not private).
 on:
     workflow_dispatch:
         inputs:
@@ -200,7 +200,7 @@ jobs:
         name: publish
         needs: pins
         # Only the public repository publishes: a private copy of it never does, whatever it is named.
-        if: ${{ github.event_name == 'push' && github.repository == 'cbnsndwch/erden' && github.event.repository.private == false }}
+        if: ${{ github.event_name == 'push' && github.repository == 'erden-sh/erden' && github.event.repository.private == false }}
         # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
         runs-on: ubuntu-24.04
         permissions:

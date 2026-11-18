@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
-const REPOSITORY = 'https://github.com/cbnsndwch/erden/releases/download';
+const REPOSITORY = 'https://github.com/erden-sh/erden/releases/download';
 const USER_AGENT = 'erden-release-verify/1';
 const REGISTRY = 'https://registry.erden.sh';
 
