@@ -28,6 +28,8 @@ import {
     exportSource,
 } from './verify-binary-reproducible.mjs';
 
+import { installMintedBinary } from '../../scripts/lib/fetch-minted-engine.mjs';
+
 const shacl = resolve(import.meta.dirname, '..');
 const repository = resolve(shacl, '..');
 
@@ -73,10 +75,24 @@ function main() {
         const build = buildOnce(platform.target, source, join(temporary, BUILD_LAYOUT.a.target), DEFAULT_SOURCE_DATE_EPOCH);
         if (!matchesPin(build.binary, anchor)) {
             const bytes = readFileSync(build.binary);
-            throw new Error(
+            const reason =
                 `The ${platform.target} build from ${commit} is ${sha256(bytes)} (${String(bytes.length)} bytes), not the pinned ` +
-                    `${anchor.sha256} (${String(anchor.bytes)} bytes); it is not installed`,
-            );
+                `${anchor.sha256} (${String(anchor.bytes)} bytes)`;
+            // Linux builds in the pinned builder image, so a difference is a defect. A native build uses the runner
+            // image's linker, which no pin covers: the minted binary is fetched instead (scripts/lib/fetch-minted-engine.mjs).
+            if (platform.runtime.os === 'linux') throw new Error(`${reason}; it is not installed`);
+            const record = JSON.parse(readFileSync(join(shacl, 'qualification/binary-reproducibility.json'), 'utf8'));
+            installMintedBinary({
+                artifact: `shacl-${platform.target}`,
+                runId: record.targets[platform.target]?.workflowRunId ?? record.workflowRunId,
+                target: platform.target,
+                executable: executableName(platform.target),
+                anchor,
+                destination,
+                reason,
+            });
+            process.stdout.write(`${platform.target}: installed the minted ${anchor.sha256}\n`);
+            return;
         }
         mkdirSync(join(shacl, platform.directory, 'bin'), { recursive: true });
         copyFileSync(build.binary, destination);

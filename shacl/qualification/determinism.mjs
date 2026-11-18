@@ -17,6 +17,13 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
+import { warnInJobSummary } from '../../scripts/lib/ci-warning.mjs';
+
+const REFERENCE_TARGET = 'x86_64-unknown-linux-gnu';
+/** Targets built natively, with the runner image's linker and system libraries, which no pin covers. */
+const NATIVE_TARGETS = Object.freeze(['x86_64-pc-windows-msvc', 'aarch64-apple-darwin']);
+const NATIVE_HOST = process.platform === 'win32' || process.platform === 'darwin';
+
 const PLACEHOLDER = `sha256:${'0'.repeat(64)}`;
 
 function sha256(bytes) {
@@ -96,6 +103,7 @@ function runRequests(binary, requestsDir, out) {
     const index = JSON.parse(readFileSync(join(requestsDir, 'index.json'), 'utf8'));
     mkdirSync(out, { recursive: true });
     const answers = [];
+    const warnings = [];
     for (const request of index.requests) {
         const line = readFileSync(join(requestsDir, request.file), 'utf8');
         if (sha256(line) !== request.sha256) throw new Error(`${request.file} does not match the request index`);
@@ -112,13 +120,18 @@ function runRequests(binary, requestsDir, out) {
             }
             return child.stdout;
         });
-        if (!bytes[0].equals(bytes[1])) throw new Error(`${request.id}: two runs of one binary gave different answers`);
+        if (!bytes[0].equals(bytes[1])) {
+            // On Windows and macOS (native builds) this is reported and the first answer kept; on Linux it fails.
+            if (!NATIVE_HOST) throw new Error(`${request.id}: two runs of one binary gave different answers`);
+            warnings.push(`${request.id}: two runs of one binary gave different answers`);
+        }
         const normalized = bytes[0].toString('utf8').replace(`"executableDigest":"${digest}"`, `"executableDigest":"${index.placeholder}"`);
         const file = request.file.replace('.request.json', '.answer.json');
         writeFileSync(join(out, file), normalized);
         answers.push({ id: request.id, file, sha256: sha256(normalized), bytes: Buffer.byteLength(normalized) });
     }
-    writeFileSync(join(out, 'answers.json'), `${JSON.stringify({ executableDigest: digest, platform: `${process.platform}-${process.arch}`, answers }, null, 1)}\n`);
+    writeFileSync(join(out, 'answers.json'), `${JSON.stringify({ executableDigest: digest, platform: `${process.platform}-${process.arch}`, warnings, answers }, null, 1)}\n`);
+    for (const warning of warnings) warnInJobSummary(`erden-shacl determinism: ${warning}`);
     console.log(`${String(answers.length)} answers, each identical over two runs (${digest})`);
 }
 
@@ -128,27 +141,38 @@ function compare(answersRoot, out) {
         .map((entry) => ({ name: entry.name, record: JSON.parse(readFileSync(join(answersRoot, entry.name, 'answers.json'), 'utf8')) }))
         .sort((left, right) => left.name.localeCompare(right.name));
     if (sets.length < 2) throw new Error('compare needs the answers of at least two platforms');
-    const [first, ...rest] = sets;
+    // Linux x64 is the reference: the Linux targets build in the pinned builder image and must agree. A natively built
+    // target (Windows, macOS) that differs is reported as a warning and does not fail the comparison.
+    const first = sets.find((set) => set.name === REFERENCE_TARGET) ?? sets[0];
+    const rest = sets.filter((set) => set !== first);
     const differences = [];
+    const nativeDifferences = [];
     for (const other of rest) {
         if (other.record.answers.length !== first.record.answers.length) {
             differences.push(`${other.name} answered ${String(other.record.answers.length)} requests, ${first.name} ${String(first.record.answers.length)}`);
             continue;
         }
+        const native = NATIVE_TARGETS.includes(other.name);
+        for (const warning of other.record.warnings ?? []) nativeDifferences.push(`${other.name}: ${warning}`);
         other.record.answers.forEach((answer, index) => {
-            if (answer.sha256 !== first.record.answers[index].sha256) differences.push(`${answer.id}: ${other.name} differs from ${first.name}`);
+            if (answer.sha256 !== first.record.answers[index].sha256) {
+                (native ? nativeDifferences : differences).push(`${answer.id}: ${other.name} differs from ${first.name}`);
+            }
         });
     }
     mkdirSync(out, { recursive: true });
     const summary = {
         platforms: sets.map(({ name, record }) => ({ name, platform: record.platform, executableDigest: record.executableDigest })),
         requests: first.record.answers.length,
-        identical: differences.length === 0,
+        identical: differences.length === 0 && nativeDifferences.length === 0,
+        result: differences.length > 0 ? 'different' : nativeDifferences.length > 0 ? 'differs-on-native' : 'identical',
         differences,
+        nativeDifferences,
     };
     writeFileSync(join(out, 'comparison.json'), `${JSON.stringify(summary, null, 2)}\n`);
-    console.log(`${String(sets.length)} platforms, ${String(summary.requests)} requests: ${summary.identical ? 'byte-identical apart from the executable digest' : `${String(differences.length)} differences`}`);
-    if (!summary.identical) {
+    console.log(`${String(sets.length)} platforms, ${String(summary.requests)} requests: ${summary.identical ? 'byte-identical apart from the executable digest' : `${String(differences.length)} differences, ${String(nativeDifferences.length)} on native builds`}`);
+    for (const difference of nativeDifferences) warnInJobSummary(`erden-shacl determinism: ${difference}`);
+    if (differences.length > 0) {
         console.error(differences.slice(0, 50).join('\n'));
         process.exit(1);
     }

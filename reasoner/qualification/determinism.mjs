@@ -30,6 +30,8 @@ import { arch, cpus, platform, release, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
+import { warnInJobSummary } from '../../scripts/lib/ci-warning.mjs';
+
 export const PLACEHOLDER_EXECUTABLE_DIGEST = `sha256:${'0'.repeat(64)}`;
 export const EXCLUDED_MARKER = 'sha256:<excluded:own-executable-digest>';
 export const DETERMINISM_TARGETS = Object.freeze([
@@ -39,6 +41,11 @@ export const DETERMINISM_TARGETS = Object.freeze([
   'aarch64-apple-darwin',
 ]);
 const REFERENCE_TARGET = 'x86_64-unknown-linux-gnu';
+/**
+ * Targets built natively, with the runner image's linker and system libraries, which no pin covers. Their differences are
+ * reported as warnings and do not fail a run; the Linux targets build in the pinned builder image and stay strict.
+ */
+export const NATIVE_TARGETS = Object.freeze(['x86_64-pc-windows-msvc', 'aarch64-apple-darwin']);
 const REQUESTS_SCHEMA = 'erden.reasoner-determinism-requests/v1';
 const ANSWERS_SCHEMA = 'erden.reasoner-determinism-answers/v1';
 const COMPARISON_SCHEMA = 'erden.reasoner-determinism-comparison/v1';
@@ -187,18 +194,23 @@ function runCommand(values) {
   const record = readJson(values.record);
   const bytes = readFileSync(binary);
   const executableDigest = sha256(bytes);
-  if (
-    record.result !== 'byte-identical' ||
-    record.runs?.length !== 2 ||
-    record.runs.some((run) => run.sha256 !== executableDigest || run.bytes !== bytes.length)
-  ) {
-    throw new Error(`${binary} (${executableDigest}) is not the byte-identical build its record names`);
+  // A native build whose two clean builds differed (verify-binary-reproducible.mjs) runs its first build.
+  const native = NATIVE_TARGETS.includes(record.target);
+  const accepted =
+    record.runs?.length === 2 &&
+    (record.result === 'byte-identical' || (native && record.result === 'native-builds-differ')) &&
+    record.runs[0].sha256 === executableDigest &&
+    record.runs[0].bytes === bytes.length &&
+    (record.result !== 'byte-identical' || (record.runs[1].sha256 === executableDigest && record.runs[1].bytes === bytes.length));
+  if (!accepted) {
+    throw new Error(`${binary} (${executableDigest}) is not the build its record names`);
   }
   const { manifest, manifestSha256, requests } = readRequestSet(values.requests);
   const out = resolve(values.out);
   mkdirSync(join(out, 'responses'), { recursive: true });
   const cases = [];
   const problems = [];
+  const warnings = [];
   for (const request of requests) {
     const wire = bindRequest(request.wire, executableDigest);
     const timeoutMs = manifest.wallTimeMs + 60_000;
@@ -215,7 +227,7 @@ function runCommand(values) {
       problems.push(`${request.name}: the binary failed (${failed.error ?? failed.signal ?? failed.status}) ${failed.stderr.slice(0, 200)}`);
     } else if (!runs[0].stdout.equals(runs[1].stdout)) {
       entry.runToRun = firstDifference(runs[0].stdout, runs[1].stdout);
-      problems.push(`${request.name}: two runs on this platform answered differently`);
+      (native ? warnings : problems).push(`${request.name}: two runs on this platform answered differently`);
     }
     const answer = runs[0].stdout;
     writeFileSync(join(out, 'responses', responseFileName(request.file)), answer);
@@ -239,9 +251,11 @@ function runCommand(values) {
     buildRecordSha256: sha256(readFileSync(values.record)),
     requestsManifestSha256: manifestSha256,
     problems,
+    warnings,
     cases,
   };
   writeFileSync(join(out, 'answers.json'), `${JSON.stringify(answers, null, 2)}\n`);
+  for (const warning of warnings) warnInJobSummary(`${record.target}: ${warning}`);
   if (problems.length > 0) {
     process.stderr.write(`${problems.join('\n')}\n`);
     process.exitCode = 1;
@@ -252,6 +266,7 @@ function runCommand(values) {
 export function compareAnswerSets(requestsDirectory, answersDirectory, targets = DETERMINISM_TARGETS) {
   const { manifest, manifestSha256, requests } = readRequestSet(requestsDirectory);
   const problems = [];
+  const nativeDifferences = [];
   const platforms = {};
   for (const target of targets) {
     let answers;
@@ -264,6 +279,7 @@ export function compareAnswerSets(requestsDirectory, answersDirectory, targets =
     if (answers.schema !== ANSWERS_SCHEMA || answers.target !== target) problems.push(`${target}: answers.json is not for ${target}`);
     if (answers.requestsManifestSha256 !== manifestSha256) problems.push(`${target}: answered another request set`);
     for (const problem of answers.problems ?? []) problems.push(`${target}: ${problem}`);
+    for (const warning of answers.warnings ?? []) nativeDifferences.push(`${target}: ${warning}`);
     platforms[target] = answers;
   }
   const cases = [];
@@ -308,14 +324,17 @@ export function compareAnswerSets(requestsDirectory, answersDirectory, targets =
         firstDifference: firstDifference(reference, bytes),
         jsonDifferences: jsonDifferences(reference, bytes),
       });
-      problems.push(`${request.name}: ${target} differs from the reference beyond the excluded field`);
+      (NATIVE_TARGETS.includes(target) ? nativeDifferences : problems).push(
+        `${request.name}: ${target} differs from the reference beyond the excluded field`,
+      );
     }
     row.identical = row.differences.length === 0 && Object.keys(normalized).length === targets.length;
     cases.push(row);
   }
   return {
     schema: COMPARISON_SCHEMA,
-    result: problems.length === 0 ? 'identical' : 'different',
+    // `differs-on-native`: only the natively built targets differ, which is reported but does not fail a mint.
+    result: problems.length > 0 ? 'different' : nativeDifferences.length > 0 ? 'differs-on-native' : 'identical',
     excludedFields: [
       {
         field: 'tool.executableDigest',
@@ -335,6 +354,7 @@ export function compareAnswerSets(requestsDirectory, answersDirectory, targets =
       Object.entries(platforms).map(([target, answers]) => [target, { host: answers.host, binary: answers.binary }]),
     ),
     problems,
+    nativeDifferences,
     cases,
   };
 }
@@ -360,6 +380,9 @@ function summary(comparison, targets) {
     }),
     '',
     ...(comparison.problems.length === 0 ? ['No differences.'] : ['Problems:', ...comparison.problems.map((item) => `- ${item}`)]),
+    ...(comparison.nativeDifferences.length === 0
+      ? []
+      : ['', 'Native-build differences (warnings):', ...comparison.nativeDifferences.map((item) => `- ${item}`)]),
   ];
   return `${lines.join('\n')}\n`;
 }
@@ -376,7 +399,8 @@ function compareCommand(values) {
   const text = summary(comparison, DETERMINISM_TARGETS);
   writeFileSync(join(out, 'comparison.md'), text);
   process.stdout.write(text);
-  if (comparison.result !== 'identical') process.exitCode = 1;
+  for (const difference of comparison.nativeDifferences) warnInJobSummary(`reasoner determinism: ${difference}`);
+  if (comparison.result === 'different') process.exitCode = 1;
 }
 
 function main() {

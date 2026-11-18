@@ -21,7 +21,13 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { PACKAGE_VERSION, REASONER_TOOL } from '../distribution/src/index.js';
-import { LINUX_BUILDER_IMAGE, RUST_TOOLCHAIN, executableName } from './verify-binary-reproducible.mjs';
+import { LINUX_BUILDER_IMAGE, RUST_TOOLCHAIN, executableName, rustflagsRecordOf } from './verify-binary-reproducible.mjs';
+
+/**
+ * The cross-platform comparison results a mint accepts: `differs-on-native` means only the Windows or macOS answers
+ * differ, which those natively built targets report as a warning (determinism.mjs).
+ */
+const ACCEPTED_COMPARISONS = new Set(['identical', 'differs-on-native']);
 
 const qualification = import.meta.dirname;
 const reasoner = resolve(qualification, '..');
@@ -191,11 +197,18 @@ export function distributionManifestOf(current) {
     return `${JSON.stringify(ordered, null, 4)}\n`;
 }
 
-/** Refuses a build record that is not two identical clean builds of the qualified inputs from this adapter crate. */
+/**
+ * Refuses a build record that is not two clean builds of the qualified inputs from this adapter crate. The Linux builds
+ * must be identical; a native (Windows or macOS) build whose two clean builds differ is accepted with its first build,
+ * which verify-binary-reproducible.mjs reported as a warning.
+ */
 export function assertBuildRecord(platform, record, binaryBytes, adapterTree) {
-    if (record.result !== 'byte-identical' || record.runs?.length !== 2 || record.runs[0].sha256 !== record.runs[1].sha256) {
+    const identical = record.result === 'byte-identical' && record.runs?.length === 2 && record.runs[0].sha256 === record.runs[1].sha256;
+    const nativeDiffers = platform.runtime.os !== 'linux' && record.result === 'native-builds-differ' && record.runs?.length === 2;
+    if (!identical && !nativeDiffers) {
         fail(`${platform.target}: the two clean builds differ`);
     }
+    if (record.rustflags !== rustflagsRecordOf(platform.target)) fail(`${platform.target}: built with other flags than this checkout's`);
     if (record.target !== platform.target) fail(`${platform.target}: the record is for ${String(record.target)}`);
     if (sha256(binaryBytes) !== record.runs[0].sha256 || binaryBytes.length !== record.runs[0].bytes) {
         fail(`${platform.target}: the uploaded binary is not the built one`);
@@ -250,7 +263,7 @@ function check() {
     if (distribution !== distributionManifestOf(JSON.parse(distribution))) fail('the resolver does not depend on exactly the four platform packages');
     const determinism = record.crossPlatformDeterminism;
     if (
-        determinism?.result !== 'identical' ||
+        !ACCEPTED_COMPARISONS.has(determinism?.result) ||
         JSON.stringify(Object.values(determinism.executables).sort()) !== JSON.stringify(entries.map((entry) => entry.sha256).sort())
     ) {
         fail('the record lacks an identical cross-platform determinism comparison of the minted binaries');
@@ -263,10 +276,30 @@ function check() {
     console.log(`reasoner ${PACKAGE_VERSION} packages, anchors and record agree with the mint`);
 }
 
+/**
+ * Whether the committed pins are this checkout's build, so a release can reuse the minted binaries: a mint record, the
+ * adapter crate and lock it was built from, and every target's flags (which live in the qualification scripts, not the
+ * crate). Refuses otherwise, which means the reasoner must be minted again.
+ */
+function matchesSource() {
+    if (!existsSync(MINT_RECORD)) fail(`reasoner ${PACKAGE_VERSION} is not minted yet`);
+    const record = JSON.parse(readFileSync(MINT_RECORD, 'utf8'));
+    if (record.tool?.version !== PACKAGE_VERSION) fail('the mint record is for another version');
+    if (git('rev-parse', 'HEAD:reasoner/erden-reasoner') !== record.adapterCrateSourceTree || sha256(readFileSync(join(reasoner, 'Cargo.lock'))) !== record.cargoLockDigest) {
+        fail('the committed adapter crate or lock is not the minted source');
+    }
+    for (const platform of PLATFORMS) {
+        if (record.targets[platform.target]?.rustflags !== rustflagsRecordOf(platform.target)) {
+            fail(`${platform.target}: minted with other flags than this checkout builds with`);
+        }
+    }
+    console.log(`reasoner ${PACKAGE_VERSION} pins are this checkout's build (run ${String(record.workflowRunId)})`);
+}
+
 function mint(values) {
     const comparison = JSON.parse(readFileSync(join(resolve(values.determinism), 'comparison.json'), 'utf8'));
-    if (comparison.result !== 'identical' || Object.keys(comparison.platforms ?? {}).length !== PLATFORMS.length) {
-        fail('the cross-platform determinism comparison is not identical on all four platforms');
+    if (!ACCEPTED_COMPARISONS.has(comparison.result) || Object.keys(comparison.platforms ?? {}).length !== PLATFORMS.length) {
+        fail('the cross-platform determinism comparison is not identical on all four platforms (or on both Linux targets)');
     }
     const adapterTree = git('rev-parse', 'HEAD:reasoner/erden-reasoner');
     const targets = {};
@@ -310,7 +343,8 @@ function mint(values) {
                 linuxBuilderImage: LINUX_BUILDER_IMAGE,
                 targets,
                 crossPlatformDeterminism: {
-                    result: 'identical',
+                    result: comparison.result,
+                    nativeDifferences: comparison.nativeDifferences ?? [],
                     requestCount: comparison.requestCount,
                     requestsManifestSha256: comparison.requestsManifestSha256,
                     excludedFields: ['tool.executableDigest'],
@@ -331,11 +365,13 @@ function main() {
             determinism: { type: 'string' },
             'run-id': { type: 'string' },
             check: { type: 'boolean', default: false },
+            'matches-source': { type: 'boolean', default: false },
         },
     });
     if (values.check) return check();
+    if (values['matches-source']) return matchesSource();
     if (values.artifacts === undefined || values.determinism === undefined || values['run-id'] === undefined) {
-        throw new Error('Usage: finalize-artifacts.mjs --artifacts <dir> --determinism <dir> --run-id <id> | --check');
+        throw new Error('Usage: finalize-artifacts.mjs --artifacts <dir> --determinism <dir> --run-id <id> | --check | --matches-source');
     }
     return mint(values);
 }

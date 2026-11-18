@@ -207,12 +207,21 @@ describe('determinism comparison', () => {
     expect(comparison.cases.every((row) => row.identical)).toBe(true);
   });
 
-  test('reports any other difference with its JSON path', () => {
-    const comparison = fakeRun({ target: 'aarch64-apple-darwin', from: '"id":"inferred:1"', to: '"id":"inferred:2"' });
+  test('fails on any other difference on Linux, with its JSON path', () => {
+    const comparison = fakeRun({ target: 'aarch64-unknown-linux-gnu', from: '"id":"inferred:1"', to: '"id":"inferred:2"' });
     expect(comparison.result).toBe('different');
     const row = comparison.cases.find((item) => item.name === 'known-answer/subclass-type');
     expect(row?.identical).toBe(false);
-    expect(row?.differences.map((item) => item.target)).toEqual(['aarch64-apple-darwin']);
+    expect(row?.differences.map((item) => item.target)).toEqual(['aarch64-unknown-linux-gnu']);
+    expect(row?.differences[0]?.jsonDifferences.map((item) => item.path)).toEqual(['$.result.inferred[0].id']);
+  });
+
+  test('reports a difference on a natively built target (macOS, Windows) as a warning, not a failure', () => {
+    const comparison = fakeRun({ target: 'aarch64-apple-darwin', from: '"id":"inferred:1"', to: '"id":"inferred:2"' });
+    expect(comparison.result).toBe('differs-on-native');
+    expect(comparison.problems).toEqual([]);
+    expect(comparison.nativeDifferences).toEqual(['known-answer/subclass-type: aarch64-apple-darwin differs from the reference beyond the excluded field']);
+    const row = comparison.cases.find((item) => item.name === 'known-answer/subclass-type');
     expect(row?.differences[0]?.jsonDifferences.map((item) => item.path)).toEqual(['$.result.inferred[0].id']);
   });
 

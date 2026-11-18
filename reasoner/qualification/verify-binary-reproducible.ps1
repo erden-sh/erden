@@ -93,7 +93,7 @@ function Invoke-WindowsBuild([string]$TargetDirectory, [string]$SourceDirectory)
         $env:CARGO_TARGET_DIR = $TargetDirectory
         $env:CARGO_INCREMENTAL = '0'
         $env:SOURCE_DATE_EPOCH = $sourceDateEpoch
-        $env:RUSTFLAGS = "-C link-arg=/Brepro --remap-path-prefix=$SourceDirectory=/erden-reasoner --remap-path-prefix=$cargoDirectory=/cargo"
+        $env:RUSTFLAGS = "-C target-feature=+crt-static -C link-arg=/Brepro --remap-path-prefix=$SourceDirectory=/erden-reasoner --remap-path-prefix=$cargoDirectory=/cargo"
         & rustup run 1.96.0 cargo build --release --locked --target x86_64-pc-windows-msvc --bin erden-reasoner --manifest-path (Join-Path $SourceDirectory 'Cargo.toml')
         if ($LASTEXITCODE -ne 0) { throw "Windows Cargo build failed: $LASTEXITCODE" }
     } finally {
@@ -198,7 +198,7 @@ try {
         }
         windows = [ordered]@{
             target = 'x86_64-pc-windows-msvc'
-            rustflags = '-C link-arg=/Brepro --remap-path-prefix=<reasoner>=/erden-reasoner --remap-path-prefix=<cargo-home>=/cargo'
+            rustflags = '-C target-feature=+crt-static -C link-arg=/Brepro --remap-path-prefix=<reasoner>=/erden-reasoner --remap-path-prefix=<cargo-home>=/cargo'
             runs = @($windowsA, $windowsB)
             package = $windowsPackage
             result = 'byte-identical-and-package-matched'

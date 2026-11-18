@@ -1,18 +1,27 @@
 name: release
 
-# The tools release. Two modes:
+# The tools release. Three kinds of run, two of them dispatched (workflow_dispatch with a version) and one on a tag:
 #
-# - Mint (workflow_dispatch with a version): builds both engines on the four native runners (twice each, with the
-#   cross-platform determinism check), then each platform's CLI archive (twice, from two git archive exports), and
-#   uploads the pins for a pull request: release/pins/<version>.json, and the engine mint outputs (each finalize
-#   script's package metadata, anchors and record) when an engine's binaries are not the committed pins. An engine
-#   change therefore takes two mints: the first pins the engines, and the second, on the commit that holds those
-#   pins, pins the archives.
-# - Release (push of tag v<version>): builds everything again from the tagged commit, with the pinned source date
-#   epoch, and refuses to publish unless every engine binary and every archive matches the committed pins byte for
-#   byte. Only then does the publish job, the one job with contents: write, create a draft release with the four
-#   archives, SHA256SUMS, install.sh and install.ps1, check the uploaded assets' digests and publish it. It runs only
-#   in the public repository (named erden-sh/erden and not private).
+# - Engine mint, when the committed engine pins are not this checkout's build (finalize-artifacts.mjs
+#   --matches-source: no mint record, or another adapter crate, lock or build flags): builds both engines on the four
+#   native runners, twice each, with the cross-platform determinism check, and uploads `engine-mint`, each finalize
+#   script's package metadata, anchors and record, for a pull request. Linux builds run in the digest-pinned builder
+#   image and must be byte-identical; the Windows and macOS builds use the runner image's linker and system libraries,
+#   which no pin covers, so a difference between their two builds or in their answers is a warning in the job summary,
+#   not a failure.
+# - Archive mint, when the engine pins are this checkout's build: builds no engine. Each platform's CLI archive is built
+#   twice from two git archive exports with the exact pinned engine binaries, fetched from the engine mint run the
+#   records name and checked against the pins, and the run uploads `release-pins` (release/pins/<version>.json, naming
+#   this run as the mint run) for a pull request.
+# - Release (push of tag v<version>): builds nothing. It fetches the archive artifacts of the mint run the committed
+#   pins name, refuses unless every archive is byte for byte the pinned one, and only then does the publish job, the one
+#   job with contents: write, create a draft release with the four archives, SHA256SUMS, install.sh and install.ps1,
+#   check the uploaded assets' digests and publish it. It runs only in the public repository (named erden-sh/erden and
+#   not private).
+#
+# GitHub keeps a run's artifacts for 90 days (this repository's maximum): an archive mint must follow its engine mint,
+# and a tag its archive mint, within that time, or the mint is run again. Jobs that fetch another run's artifacts get
+# actions: read for it.
 on:
     workflow_dispatch:
         inputs:
@@ -28,19 +37,52 @@ permissions:
     contents: read
 
 jobs:
+    status:
+        name: engine pins status
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
+        runs-on: ubuntu-24.04
+        outputs:
+            pinned: ${{ steps.status.outputs.pinned }}
+            reasoner-run: ${{ steps.status.outputs.reasoner-run }}
+            shacl-run: ${{ steps.status.outputs.shacl-run }}
+        steps:
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+              with:
+                  fetch-depth: 0
+            - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+              with:
+                  node-version-file: .node-version
+            - name: Whether the committed engine pins are this checkout's build
+              id: status
+              shell: bash
+              run: |
+                  if node reasoner/qualification/finalize-artifacts.mjs --matches-source && node shacl/qualification/finalize-artifacts.mjs --matches-source; then
+                      echo "pinned=true" >> "$GITHUB_OUTPUT"
+                      echo "reasoner-run=$(node -p "require('./reasoner/qualification/mint.json').workflowRunId")" >> "$GITHUB_OUTPUT"
+                      echo "shacl-run=$(node -p "require('./shacl/qualification/binary-reproducibility.json').workflowRunId")" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "pinned=false" >> "$GITHUB_OUTPUT"
+                  fi
+
     reasoner:
+        needs: status
+        if: ${{ github.event_name == 'workflow_dispatch' && needs.status.outputs.pinned != 'true' }}
         uses: ./.github/workflows/reasoner-build.yml
         with:
             commit: ${{ github.sha }}
 
     shacl:
+        needs: status
+        if: ${{ github.event_name == 'workflow_dispatch' && needs.status.outputs.pinned != 'true' }}
         uses: ./.github/workflows/shacl-build.yml
         with:
             commit: ${{ github.sha }}
 
     engines:
         name: engine pins
-        needs: [reasoner, shacl]
+        needs: [status, reasoner, shacl]
+        if: ${{ github.event_name == 'workflow_dispatch' && needs.status.outputs.pinned != 'true' }}
         # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
         runs-on: ubuntu-24.04
         outputs:
@@ -61,8 +103,7 @@ jobs:
             - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
               with:
                   path: engines
-            # Each finalize script writes its packages' pins from the built binaries; if that changes nothing, the
-            # binaries are the committed pins. A tag build must find them unchanged.
+            # Each finalize script writes its packages' pins from the built binaries, for the engine-pins pull request.
             - name: Compare the built engines with the committed pins
               id: check
               shell: bash
@@ -73,7 +114,6 @@ jobs:
                   if [ -z "$changed" ]; then echo "pinned=true" >> "$GITHUB_OUTPUT"; exit 0; fi
                   echo "pinned=false" >> "$GITHUB_OUTPUT"
                   git status --porcelain -- reasoner shacl
-                  if [ "$GITHUB_EVENT_NAME" = push ]; then echo "The tagged commit's engine pins are not these builds"; exit 1; fi
                   # New platform package versions and optional dependencies change the lockfile's importers.
                   pnpm install --lockfile-only --ignore-scripts
                   mkdir -p engine-mint
@@ -88,8 +128,11 @@ jobs:
 
     archive:
         name: archive ${{ matrix.platform }}
-        needs: engines
-        if: ${{ needs.engines.outputs.pinned == 'true' }}
+        needs: status
+        if: ${{ github.event_name == 'workflow_dispatch' && needs.status.outputs.pinned == 'true' }}
+        permissions:
+            contents: read
+            actions: read
         strategy:
             fail-fast: false
             matrix:
@@ -123,14 +166,20 @@ jobs:
                   cache-dependency-path: pnpm-lock.yaml
             # Fills the store the archive builds install from offline.
             - run: pnpm install --frozen-lockfile --ignore-scripts
+            # The exact engine binaries the engine mint built and the pins name; build-cli-archive.mjs checks each
+            # against its pin before it is used.
             - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
               with:
                   name: reasoner-${{ matrix.target }}
                   path: engines/reasoner
+                  run-id: ${{ needs.status.outputs.reasoner-run }}
+                  github-token: ${{ github.token }}
             - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
               with:
                   name: shacl-${{ matrix.target }}
                   path: engines/shacl
+                  run-id: ${{ needs.status.outputs.shacl-run }}
+                  github-token: ${{ github.token }}
             - name: Download the pinned Node.js runtime
               shell: bash
               run: |
@@ -138,10 +187,6 @@ jobs:
                   base=$(node -p "require('./release/node-runtime.json').baseUrl")
                   curl -fsSL --retry 3 -A 'erden-release/1' -o "$RUNNER_TEMP/$file" "$base$file"
                   echo "NODE_ARCHIVE=$RUNNER_TEMP/$file" >> "$GITHUB_ENV"
-            - name: Use the pinned source date epoch for a tag build
-              if: ${{ github.event_name == 'push' }}
-              shell: bash
-              run: echo "SOURCE_DATE_EPOCH=$(node release/pins.mjs epoch --version "${GITHUB_REF_NAME#v}")" >> "$GITHUB_ENV"
             - name: Build the archive twice, compare, and run it
               shell: bash
               run: |
@@ -167,6 +212,7 @@ jobs:
     pins:
         name: release pins
         needs: archive
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
         runs-on: ubuntu-24.04
         steps:
@@ -179,32 +225,57 @@ jobs:
                   pattern: archive-*
                   merge-multiple: true
                   path: release-build
-            - name: Mint the pins
-              if: ${{ github.event_name == 'workflow_dispatch' }}
+            - name: Mint the pins, naming this run as the one whose archives a tag publishes
               shell: bash
               run: |
                   version=$(node -p "require('./apps/cli/package.json').version")
                   if [ "$version" != "${{ inputs.version }}" ]; then echo "apps/cli is $version, not ${{ inputs.version }}"; exit 1; fi
-                  node release/pins.mjs mint --artifacts release-build --out release-pins
-            - name: Refuse anything but the pinned bytes
-              if: ${{ github.event_name == 'push' }}
-              run: node release/pins.mjs verify --artifacts release-build --release --tag "$GITHUB_REF_NAME"
+                  node release/pins.mjs mint --artifacts release-build --out release-pins --run-id "$GITHUB_RUN_ID"
             - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-              if: ${{ github.event_name == 'workflow_dispatch' }}
               with:
                   name: release-pins
                   path: release-pins/
                   if-no-files-found: error
 
+    published-archives:
+        name: the mint's archives
+        if: ${{ github.event_name == 'push' }}
+        # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: read
+            actions: read
+        outputs:
+            mint-run: ${{ steps.mint.outputs.run }}
+        steps:
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+            - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+              with:
+                  node-version-file: .node-version
+            - name: The mint run the committed pins name
+              id: mint
+              shell: bash
+              run: echo "run=$(node release/pins.mjs mint-run --version "${GITHUB_REF_NAME#v}")" >> "$GITHUB_OUTPUT"
+            - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+              with:
+                  pattern: archive-*
+                  merge-multiple: true
+                  path: release-build
+                  run-id: ${{ steps.mint.outputs.run }}
+                  github-token: ${{ github.token }}
+            - name: Refuse anything but the pinned bytes
+              run: node release/pins.mjs verify --artifacts release-build --release --tag "$GITHUB_REF_NAME"
+
     publish:
         name: publish
-        needs: pins
+        needs: published-archives
         # Only the public repository publishes: a private copy of it never does, whatever it is named.
         if: ${{ github.event_name == 'push' && github.repository == 'erden-sh/erden' && github.event.repository.private == false }}
         # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
         runs-on: ubuntu-24.04
         permissions:
             contents: write
+            actions: read
         steps:
             - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
             - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -215,6 +286,11 @@ jobs:
                   pattern: archive-*
                   merge-multiple: true
                   path: release-build
+                  run-id: ${{ needs.published-archives.outputs.mint-run }}
+                  github-token: ${{ github.token }}
+            # The same check as the job before, on the bytes this job publishes.
+            - name: Refuse anything but the pinned bytes
+              run: node release/pins.mjs verify --artifacts release-build --release --tag "$GITHUB_REF_NAME"
             - name: Assemble the assets
               shell: bash
               run: node release/assemble-assets.mjs --artifacts release-build --version "${GITHUB_REF_NAME#v}" --out assets

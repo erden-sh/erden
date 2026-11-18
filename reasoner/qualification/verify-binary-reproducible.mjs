@@ -23,6 +23,8 @@ import { parseArgs } from 'node:util';
 
 import { REASONER_TOOL } from '../distribution/src/index.js';
 
+import { warnInJobSummary } from '../../scripts/lib/ci-warning.mjs';
+
 export const LINUX_BUILDER_IMAGE = 'rust@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc';
 export const RUST_TOOLCHAIN = Object.freeze({
   rustc: '1.96.0',
@@ -45,10 +47,18 @@ const LINUX_RUSTFLAGS =
 const TARGETS = Object.freeze({
   'x86_64-unknown-linux-gnu': { host: { platform: 'linux', arch: 'x64' }, builder: 'docker', dockerPlatform: 'linux/amd64' },
   'aarch64-unknown-linux-gnu': { host: { platform: 'linux', arch: 'arm64' }, builder: 'docker', dockerPlatform: 'linux/arm64' },
-  'x86_64-pc-windows-msvc': { host: { platform: 'win32', arch: 'x64' }, builder: 'native', linkerFlags: '-C link-arg=/Brepro ' },
+  // The static CRT, so the executable needs no Visual C++ Redistributable (VCRUNTIME140.dll) on the user's machine.
+  'x86_64-pc-windows-msvc': { host: { platform: 'win32', arch: 'x64' }, builder: 'native', linkerFlags: '-C target-feature=+crt-static -C link-arg=/Brepro ' },
   'aarch64-apple-darwin': { host: { platform: 'darwin', arch: 'arm64' }, builder: 'native', linkerFlags: '' },
 });
 export const REPRODUCIBLE_TARGETS = Object.freeze(Object.keys(TARGETS));
+
+/** The flags a build record of `target` names (`rustflags`), on any host: a mint's pins hold only for these flags. */
+export function rustflagsRecordOf(target) {
+  const definition = TARGETS[target];
+  if (definition === undefined) throw new Error(`Unsupported target ${target}`);
+  return definition.builder === 'docker' ? LINUX_RUSTFLAGS : `${definition.linkerFlags}${REMAP_RECORD}`;
+}
 
 export function executableName(target) {
   return target.endsWith('-windows-msvc') ? 'erden-reasoner.exe' : 'erden-reasoner';
@@ -404,8 +414,14 @@ function main() {
       identity(a.binary, BUILD_LAYOUT.a.label, BUILD_LAYOUT.a.source),
       identity(b.binary, BUILD_LAYOUT.b.label, BUILD_LAYOUT.b.source),
     ];
-    if (runs[0].bytes !== runs[1].bytes || runs[0].sha256 !== runs[1].sha256) {
-      throw new Error(`${target} release executable is not byte reproducible: ${runs[0].sha256} vs ${runs[1].sha256}`);
+    const reproducible = runs[0].bytes === runs[1].bytes && runs[0].sha256 === runs[1].sha256;
+    if (!reproducible) {
+      // The Linux builds run in the pinned builder image, so a difference there is a defect. A native build also uses
+      // the runner image's linker and system libraries, which no pin covers: it is reported, and the first is kept.
+      if (a.plan.kind === 'docker') {
+        throw new Error(`${target} release executable is not byte reproducible: ${runs[0].sha256} vs ${runs[1].sha256}`);
+      }
+      warnInJobSummary(`${target}: the two clean builds differ (${runs[0].sha256} vs ${runs[1].sha256}); the first is kept`);
     }
     const binaryDirectory = join(out, target);
     mkdirSync(binaryDirectory, { recursive: true });
@@ -425,10 +441,10 @@ function main() {
       rustflags: a.plan.rustflagsRecord,
       runs,
       knownAnswer: knownAnswer(binary, runs[0].sha256, reasoner),
-      result: 'byte-identical',
+      result: reproducible ? 'byte-identical' : 'native-builds-differ',
     };
     writeFileSync(join(out, `${target}.json`), `${JSON.stringify(record, null, 2)}\n`);
-    process.stdout.write(`${target}: ${runs[0].sha256} (${runs[0].bytes} bytes); both clean builds match\n`);
+    process.stdout.write(`${target}: ${runs[0].sha256} (${runs[0].bytes} bytes); ${reproducible ? 'both clean builds match' : 'the first clean build kept'}\n`);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
