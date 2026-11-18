@@ -1,6 +1,8 @@
 export declare const LINUX_BUILDER_IMAGE: string;
 export declare const RUST_TOOLCHAIN: Readonly<{ rustc: string; commit: string; llvm: string }>;
 export declare const REPRODUCIBLE_TARGETS: ReadonlyArray<string>;
+/** The flags a build record of `target` names (`rustflags`), on any host. */
+export declare const rustflagsRecordOf: (target: string) => string;
 
 export interface HostIdentity {
   readonly platform: string;
