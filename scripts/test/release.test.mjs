@@ -19,7 +19,7 @@ import { collectEntries, gzipBytes, tarBytes, writeArchive, zipBytes } from '../
 import { normalizeDeployedWorkspace } from '../../release/lib/deploy.mjs';
 import { declaredLicense, writeNpmNotices } from '../../release/lib/notices.mjs';
 import { RELEASE_PLATFORMS, archiveName, assertPinned, hostPlatform, sha256 } from '../../release/lib/platforms.mjs';
-import { pinDifferences, pinsOf } from '../../release/pins.mjs';
+import { acceptedBuildResult, pinDifferences, pinsOf } from '../../release/pins.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const YAML = createRequire(join(root, 'packages/contracts/package.json'))('yaml');
@@ -213,9 +213,15 @@ function record(platform, digest = 'a') {
 
 test('a release accepts only the pinned archives and engines, on all four platforms', () => {
     const records = Object.fromEntries(Object.keys(RELEASE_PLATFORMS).map((platform) => [platform, record(platform)]));
-    const pins = pinsOf(records);
+    const pins = pinsOf(records, { mintRunId: 123 });
     assert.equal(pins.complete, true);
+    assert.equal(pins.mintRunId, 123);
     assert.deepEqual(pinDifferences(pins, records, { release: true }), []);
+    assert.match(
+        pinDifferences(pinsOf(records), records, { release: true }).join('\n'),
+        /name no mint run/u,
+        'a release publishes the archives of the mint run its pins name',
+    );
     const changed = { ...records, 'linux-x64': record('linux-x64', 'b') };
     assert.match(
         pinDifferences(pins, changed, { release: true })[0],
@@ -330,14 +336,52 @@ function evaluateGuard(expression, github) {
     });
 }
 
-test('the release workflow pins every action, and only its publish job, in the public repository, can write', () => {
+test('a tag builds nothing: it publishes the archives of the mint run its pins name, checked against the pins', () => {
+    const workflow = YAML.parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
+    function onTag(job) {
+        return !/github\.event_name == 'workflow_dispatch'/u.test(job.if ?? '');
+    }
+    const tagJobs = Object.entries(workflow.jobs)
+        .filter(([, job]) => onTag(job))
+        .map(([name]) => name)
+        .sort();
+    assert.deepEqual(tagJobs, ['publish', 'published-archives', 'verify']);
+    for (const name of ['published-archives', 'publish']) {
+        const steps = workflow.jobs[name].steps;
+        const download = steps.findIndex((step) => step.uses?.startsWith('actions/download-artifact@'));
+        assert.notEqual(download, -1, name);
+        assert.equal(steps[download].with['run-id'] !== undefined && steps[download].with.pattern, 'archive-*', name);
+        const verify = steps.findIndex((step) =>
+            step.run?.includes('release/pins.mjs verify --artifacts release-build --release --tag'),
+        );
+        assert.ok(verify > download, `${name} checks the fetched archives against the pins`);
+        assert.ok(!steps.some((step) => step.run?.includes('build-cli-archive.mjs')), `${name} builds no archive`);
+    }
+    const publishSteps = workflow.jobs.publish.steps;
+    const verifyAt = publishSteps.findIndex((step) => step.run?.includes('release/pins.mjs verify'));
+    const createAt = publishSteps.findIndex((step) => step.run?.includes('gh release create'));
+    assert.ok(verifyAt < createAt, 'the pins are checked before anything is published');
+});
+
+test('a native (Windows, macOS) archive whose two builds differed is accepted with its first build; Linux is not', () => {
+    for (const platform of ['win32-x64', 'darwin-arm64']) {
+        assert.equal(acceptedBuildResult(platform, { result: 'native-builds-differ' }), true, platform);
+    }
+    for (const platform of ['linux-x64', 'linux-arm64']) {
+        assert.equal(acceptedBuildResult(platform, { result: 'native-builds-differ' }), false, platform);
+        assert.equal(acceptedBuildResult(platform, { result: 'byte-identical' }), true, platform);
+    }
+});
+
+test('the release workflow pins every action, and only its publish job and the jobs that fetch a mint, can write or read actions', () => {
     const workflow = YAML.parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
     assert.deepEqual(workflow.permissions, { contents: 'read' });
     assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch']);
     assert.deepEqual(workflow.on.push.tags, ['v*']);
     for (const [name, job] of Object.entries(workflow.jobs)) {
         if (name === 'publish') {
-            assert.deepEqual(job.permissions, { contents: 'write' });
+            // actions: read fetches the mint run's archive artifacts.
+            assert.deepEqual(job.permissions, { contents: 'write', actions: 'read' });
             const publishes = evaluateGuard.bind(undefined, job.if);
             const tag = {
                 event_name: 'push',
@@ -352,6 +396,9 @@ test('the release workflow pins every action, and only its publish job, in the p
             );
             assert.equal(publishes({ ...tag, repository: 'someone/erden' }), false, 'a fork');
             assert.equal(publishes({ ...tag, event_name: 'workflow_dispatch' }), false, 'a mint');
+        } else if (name === 'published-archives' || name === 'archive') {
+            // These fetch another run's artifacts (the mint's archives, the engine mint's binaries); nothing more.
+            assert.deepEqual(job.permissions, { contents: 'read', actions: 'read' }, name);
         } else {
             assert.equal(job.permissions, undefined, `${name} must not raise permissions`);
         }

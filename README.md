@@ -53,8 +53,10 @@ SHA-256 before every use.
 ## Building from source
 
 Node.js 24 (the exact version is in `.node-version`) and pnpm 10.15.0 (`packageManager`). The engines build in a
-pinned Docker builder image on Linux, or with the Rust toolchain each engine's `rust-toolchain.toml` names on macOS and Windows, and
-each build is installed only if it is byte-identical to its pin.
+pinned Docker builder image on Linux, or with the Rust toolchain each engine's `rust-toolchain.toml` names on macOS and Windows.
+A Linux build is installed only if it is byte-identical to its pin. A macOS or Windows build also depends on the
+machine's linker and system libraries, which no pin covers, so it can differ from the pin; in CI the minted binary is
+then fetched from the release run that built it, checked against the pin, and installed instead.
 
 ```bash
 pnpm run bootstrap:workspace
@@ -70,6 +72,25 @@ reasoner in `reasoner/target/release/` without an environment override.
 
 `pnpm test` runs the workspace gate: the repository guards, formatting, lint, typecheck, the package packs, a packed
 CLI install, and every test.
+
+## How a release is made
+
+`.github/workflows/release.yml` runs three ways:
+
+1. **Engine mint** (dispatched): builds both engines twice on Linux x64, Linux arm64, macOS arm64 and Windows x64, checks
+   that every platform gives the same answers, and uploads their pins for a pull request. The Linux builds must be
+   byte-identical. A difference between the two macOS or Windows builds, or in their answers, is a warning in the job
+   summary, since those builds use the runner image's linker, which no pin covers. The Windows engines link the C
+   runtime statically, so they need no Visual C++ Redistributable.
+2. **Archive mint** (dispatched after the engine pins are merged): builds no engine. It builds each platform's CLI
+   archive twice with the exact pinned engine binaries, fetched from the engine mint run, and uploads
+   `release/pins/<version>.json`, naming this run, for a pull request.
+3. **Release** (a `v<version>` tag on the merged pins): builds nothing. It fetches the archives of the mint run the
+   pins name, refuses unless each one's size and SHA-256 are the pinned ones, and publishes them with `SHA256SUMS` and
+   the install scripts, which check every archive's digest before they extract it.
+
+GitHub keeps a run's artifacts for 90 days. The archive mint must follow its engine mint, and the tag its archive
+mint, within that time; otherwise run the mint again.
 
 ## Contributing and security
 

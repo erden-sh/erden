@@ -16,7 +16,11 @@ import {
     metadataOf,
     writePlatformPackage,
 } from '../../reasoner/qualification/finalize-artifacts.mjs';
-import { LINUX_BUILDER_IMAGE, RUST_TOOLCHAIN } from '../../reasoner/qualification/verify-binary-reproducible.mjs';
+import {
+    LINUX_BUILDER_IMAGE,
+    RUST_TOOLCHAIN,
+    rustflagsRecordOf,
+} from '../../reasoner/qualification/verify-binary-reproducible.mjs';
 import { OPEN_WORKSPACE_PROFILE, platformManifest, withMintedReasoner } from '../lib/workspace-guard.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -35,11 +39,32 @@ function record(binary, changes = {}) {
         toolchain: RUST_TOOLCHAIN,
         cargoLockDigest: sha256(readFileSync(resolve(root, 'reasoner/Cargo.lock'))),
         builderImage: LINUX_BUILDER_IMAGE,
+        rustflags: rustflagsRecordOf(linux.target),
         adapterCrateSourceTree: 'tree',
         knownAnswer: { fixture: 'subclass-type', responseBytes: 10, responseSha256: sha256('answer') },
         ...changes,
     };
 }
+
+test('a Windows or macOS build whose two clean builds differed is minted with its first build', () => {
+    const binary = Buffer.from('reasoner');
+    const other = { bytes: 8, sha256: sha256('other') };
+    for (const target of ['x86_64-pc-windows-msvc', 'aarch64-apple-darwin']) {
+        const platform = PLATFORMS.find((item) => item.target === target);
+        const native = record(binary, {
+            target,
+            result: 'native-builds-differ',
+            runs: [record(binary).runs[0], other],
+            builderImage: undefined,
+            rustflags: rustflagsRecordOf(target),
+        });
+        assertBuildRecord(platform, native, binary, 'tree');
+        assert.throws(
+            () => assertBuildRecord(platform, { ...native, result: 'byte-identical' }, binary, 'tree'),
+            /two clean builds differ/u,
+        );
+    }
+});
 
 test('the committed anchors are unpinned before the first mint, or agree with its verified record', () => {
     if (existsSync(resolve(root, 'reasoner/qualification/mint.json'))) {
@@ -165,6 +190,8 @@ test('the mint refuses a build that is not two identical clean builds of the qua
         [{ builderImage: 'rust:latest' }, /not the pinned builder image/u],
         [{ adapterCrateSourceTree: 'another' }, /an adapter crate other than this checkout's/u],
         [{ cargoLockDigest: sha256('lock') }, /not this checkout's Cargo\.lock/u],
+        [{ rustflags: '--remap-path-prefix=<reasoner>=/erden-reasoner' }, /other flags than this checkout's/u],
+        [{ runs: [record(binary).runs[0], other], result: 'native-builds-differ' }, /two clean builds differ/u],
     ]) {
         assert.throws(() => assertBuildRecord(linux, record(binary, changes), binary, 'tree'), pattern);
     }

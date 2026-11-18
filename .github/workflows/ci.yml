@@ -32,14 +32,16 @@ jobs:
             - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
               with:
                   path: shacl/linux-x64-gnu/bin
-                  key: erden-shacl-linux-x64-gnu-${{ hashFiles('shacl/erden-shacl/**', 'shacl/Cargo.*', 'shacl/rust-toolchain.toml', 'shacl/distribution/src/artifacts.js') }}
+                  key: erden-shacl-linux-x64-gnu-${{ hashFiles('shacl/erden-shacl/**', 'shacl/Cargo.*', 'shacl/rust-toolchain.toml', 'shacl/distribution/src/artifacts.js', 'shacl/qualification/verify-binary-reproducible.mjs') }}
             - run: node shacl/qualification/build-from-source.mjs
+              env:
+                  GH_TOKEN: ${{ github.token }}
             # The reasoner built in its mint's builder image, cached per build input; build-from-source.mjs keeps a
             # restored build only if it is of this source, and once the anchors pin this platform, only if it is the pin.
             - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
               with:
                   path: reasoner/source-build
-                  key: erden-reasoner-x86_64-unknown-linux-gnu-${{ hashFiles('reasoner/erden-reasoner/**', 'reasoner/Cargo.*', 'reasoner/rust-toolchain.toml', 'reasoner/distribution/src/artifacts.js') }}
+                  key: erden-reasoner-x86_64-unknown-linux-gnu-${{ hashFiles('reasoner/erden-reasoner/**', 'reasoner/Cargo.*', 'reasoner/rust-toolchain.toml', 'reasoner/distribution/src/artifacts.js', 'reasoner/qualification/verify-binary-reproducible.mjs') }}
             - name: Build the reasoner in its mint's builder image
               run: |
                   pnpm run reasoner:build:linux
@@ -48,6 +50,11 @@ jobs:
             - run: pnpm run check:workspace
 
     distribution-windows:
+        # actions: read lets build-from-source.mjs fetch the minted engine binary when this runner image builds other
+        # bytes than the pin (scripts/lib/fetch-minted-engine.mjs).
+        permissions:
+            contents: read
+            actions: read
         # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
         runs-on: windows-2025
         steps:
@@ -76,17 +83,21 @@ jobs:
             - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
               with:
                   path: shacl/win32-x64-msvc/bin
-                  key: erden-shacl-win32-x64-msvc-${{ hashFiles('shacl/erden-shacl/**', 'shacl/Cargo.*', 'shacl/rust-toolchain.toml', 'shacl/distribution/src/artifacts.js') }}
+                  key: erden-shacl-win32-x64-msvc-${{ hashFiles('shacl/erden-shacl/**', 'shacl/Cargo.*', 'shacl/rust-toolchain.toml', 'shacl/distribution/src/artifacts.js', 'shacl/qualification/verify-binary-reproducible.mjs') }}
             - run: rustup toolchain install 1.98.0 --profile minimal --target x86_64-pc-windows-msvc
             - run: node shacl/qualification/build-from-source.mjs
+              env:
+                  GH_TOKEN: ${{ github.token }}
             # The reasoner built as its mint builds it, cached per build input; build-from-source.mjs installs it into its
             # platform package only when byte-identical to the pin.
             - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
               with:
                   path: reasoner/source-build
-                  key: erden-reasoner-x86_64-pc-windows-msvc-${{ hashFiles('reasoner/erden-reasoner/**', 'reasoner/Cargo.*', 'reasoner/rust-toolchain.toml', 'reasoner/distribution/src/artifacts.js') }}
+                  key: erden-reasoner-x86_64-pc-windows-msvc-${{ hashFiles('reasoner/erden-reasoner/**', 'reasoner/Cargo.*', 'reasoner/rust-toolchain.toml', 'reasoner/distribution/src/artifacts.js', 'reasoner/qualification/verify-binary-reproducible.mjs') }}
             - run: rustup toolchain install 1.96.0 --profile minimal --target x86_64-pc-windows-msvc
             - run: node reasoner/qualification/build-from-source.mjs
+              env:
+                  GH_TOKEN: ${{ github.token }}
             - run: pnpm run check:distribution:closure
             - run: pnpm run check:workspace
               env:
@@ -116,14 +127,16 @@ jobs:
             - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
               with:
                   path: shacl/linux-arm64-gnu/bin
-                  key: erden-shacl-linux-arm64-gnu-${{ hashFiles('shacl/erden-shacl/**', 'shacl/Cargo.*', 'shacl/rust-toolchain.toml', 'shacl/distribution/src/artifacts.js') }}
+                  key: erden-shacl-linux-arm64-gnu-${{ hashFiles('shacl/erden-shacl/**', 'shacl/Cargo.*', 'shacl/rust-toolchain.toml', 'shacl/distribution/src/artifacts.js', 'shacl/qualification/verify-binary-reproducible.mjs') }}
             - run: node shacl/qualification/build-from-source.mjs
+              env:
+                  GH_TOKEN: ${{ github.token }}
             # The reasoner built as its mint builds it, cached per build input; build-from-source.mjs installs it into its
             # platform package only when byte-identical to the pin.
             - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
               with:
                   path: reasoner/source-build
-                  key: erden-reasoner-aarch64-unknown-linux-gnu-${{ hashFiles('reasoner/erden-reasoner/**', 'reasoner/Cargo.*', 'reasoner/rust-toolchain.toml', 'reasoner/distribution/src/artifacts.js') }}
+                  key: erden-reasoner-aarch64-unknown-linux-gnu-${{ hashFiles('reasoner/erden-reasoner/**', 'reasoner/Cargo.*', 'reasoner/rust-toolchain.toml', 'reasoner/distribution/src/artifacts.js', 'reasoner/qualification/verify-binary-reproducible.mjs') }}
             - run: pnpm run reasoner:build:linux
             - run: pnpm run check:distribution:closure
             - run: pnpm run test:distribution:clean
@@ -139,6 +152,11 @@ jobs:
                   ERDEN_REASONER_BIN: ${{ github.workspace }}/reasoner/source-build/aarch64-unknown-linux-gnu/erden-reasoner
 
     distribution-macos-arm64:
+        # actions: read lets build-from-source.mjs fetch the minted engine binary when this runner image builds other
+        # bytes than the pin (scripts/lib/fetch-minted-engine.mjs).
+        permissions:
+            contents: read
+            actions: read
         # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
         runs-on: macos-15
         steps:
@@ -159,17 +177,21 @@ jobs:
             - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
               with:
                   path: shacl/darwin-arm64/bin
-                  key: erden-shacl-darwin-arm64-${{ hashFiles('shacl/erden-shacl/**', 'shacl/Cargo.*', 'shacl/rust-toolchain.toml', 'shacl/distribution/src/artifacts.js') }}
+                  key: erden-shacl-darwin-arm64-${{ hashFiles('shacl/erden-shacl/**', 'shacl/Cargo.*', 'shacl/rust-toolchain.toml', 'shacl/distribution/src/artifacts.js', 'shacl/qualification/verify-binary-reproducible.mjs') }}
             - run: rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-darwin
             - run: node shacl/qualification/build-from-source.mjs
+              env:
+                  GH_TOKEN: ${{ github.token }}
             # The reasoner built as its mint builds it, cached per build input; build-from-source.mjs installs it into its
             # platform package only when byte-identical to the pin.
             - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
               with:
                   path: reasoner/source-build
-                  key: erden-reasoner-aarch64-apple-darwin-${{ hashFiles('reasoner/erden-reasoner/**', 'reasoner/Cargo.*', 'reasoner/rust-toolchain.toml', 'reasoner/distribution/src/artifacts.js') }}
+                  key: erden-reasoner-aarch64-apple-darwin-${{ hashFiles('reasoner/erden-reasoner/**', 'reasoner/Cargo.*', 'reasoner/rust-toolchain.toml', 'reasoner/distribution/src/artifacts.js', 'reasoner/qualification/verify-binary-reproducible.mjs') }}
             - run: rustup toolchain install 1.96.0 --profile minimal --target aarch64-apple-darwin
             - run: node reasoner/qualification/build-from-source.mjs
+              env:
+                  GH_TOKEN: ${{ github.token }}
             - run: pnpm run check:distribution:closure
             - run: pnpm run test:distribution:clean
             - run: pnpm run test:distribution:clean:pnpm

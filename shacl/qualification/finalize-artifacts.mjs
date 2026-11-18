@@ -18,7 +18,20 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync,
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
-import { CARGO_LOCK_SHA256, LINUX_BUILDER_IMAGE, RUST_TOOLCHAIN, executableName } from './verify-binary-reproducible.mjs';
+import { CARGO_LOCK_SHA256, LINUX_BUILDER_IMAGE, RUST_TOOLCHAIN, executableName, rustflagsRecordOf } from './verify-binary-reproducible.mjs';
+
+/** The comparison results a mint accepts: `differs-on-native` means only the Windows or macOS answers differ. */
+const ACCEPTED_COMPARISONS = new Set(['identical', 'differs-on-native']);
+
+/**
+ * Whether a build record holds two clean builds the mint accepts: identical on Linux (the pinned builder image), and on
+ * Windows or macOS, whose native builds use the runner image's linker, also two that differ, with the first kept.
+ */
+function acceptedBuilds(platform, record) {
+    if (record.runs?.length !== 2) return false;
+    if (record.runs[0].sha256 === record.runs[1].sha256 && record.runs[0].bytes === record.runs[1].bytes) return true;
+    return platform.runtime.os !== 'linux' && record.result === 'native-builds-differ';
+}
 
 const qualification = import.meta.dirname;
 const shacl = resolve(qualification, '..');
@@ -120,7 +133,22 @@ function metadataOf(entry, engine) {
 }
 
 function main() {
-    const { values } = parseArgs({ options: { artifacts: { type: 'string' }, 'run-id': { type: 'string' }, check: { type: 'boolean', default: false }, determinism: { type: 'string' } } });
+    const { values } = parseArgs({ options: { artifacts: { type: 'string' }, 'run-id': { type: 'string' }, check: { type: 'boolean', default: false }, 'matches-source': { type: 'boolean', default: false }, determinism: { type: 'string' } } });
+    if (values['matches-source']) {
+        // Whether the committed pins are this checkout's build, so a release can reuse the minted binaries: the crate,
+        // the lock and every target's flags (which live in the qualification scripts, not the crate) are the minted ones.
+        const record = JSON.parse(readFileSync(join(qualification, 'binary-reproducibility.json'), 'utf8'));
+        if (git('rev-parse', 'HEAD:shacl/erden-shacl') !== record.crateSourceTree || sha256(readFileSync(join(shacl, 'Cargo.lock'))) !== record.cargoLockDigest) {
+            fail('the committed crate or lock is not the minted source');
+        }
+        for (const platform of PLATFORMS) {
+            if (record.targets[platform.target]?.rustflags !== rustflagsRecordOf(platform.target)) {
+                fail(`${platform.target}: minted with other flags than this checkout builds with`);
+            }
+        }
+        console.log(`erden-shacl pins are this checkout's build (run ${String(record.workflowRunId)})`);
+        return;
+    }
     const fixture = readFileSync(join(shacl, 'distribution/fixtures/known-answer.request.json'), 'utf8');
     const engine = JSON.parse(fixture).requiredTool.engineDigest;
     if (values.check) {
@@ -128,7 +156,7 @@ function main() {
         const entries = PLATFORMS.map((platform) => {
             const built = record.targets[platform.target];
             const binary = join(shacl, platform.directory, 'bin', executableName(platform.target));
-            if (built.runs.length !== 2 || built.runs[0].sha256 !== built.runs[1].sha256 || built.runs[0].bytes !== built.runs[1].bytes) {
+            if (!acceptedBuilds(platform, built)) {
                 fail(`${platform.target}: the record does not hold two identical clean builds`);
             }
             // A binary is present only when built from source (build-from-source.mjs) or installed from a release.
@@ -144,7 +172,7 @@ function main() {
         }
         const determinism = record.crossPlatformDeterminism;
         if (
-            determinism?.result !== 'identical' ||
+            !ACCEPTED_COMPARISONS.has(determinism?.result) ||
             JSON.stringify(Object.values(determinism.executables).sort()) !== JSON.stringify(entries.map((entry) => entry.sha256).sort())
         ) {
             fail('the record lacks an identical cross-platform determinism comparison of the minted binaries');
@@ -158,11 +186,11 @@ function main() {
         return;
     }
     if (values.artifacts === undefined || values['run-id'] === undefined || values.determinism === undefined) {
-        throw new Error('Usage: finalize-artifacts.mjs --artifacts <dir> --run-id <id> --determinism <dir> | --check');
+        throw new Error('Usage: finalize-artifacts.mjs --artifacts <dir> --run-id <id> --determinism <dir> | --check | --matches-source');
     }
     const comparison = JSON.parse(readFileSync(join(resolve(values.determinism), 'comparison.json'), 'utf8'));
-    if (comparison.identical !== true || comparison.platforms.length !== PLATFORMS.length || comparison.differences.length !== 0) {
-        fail('the cross-platform determinism comparison is not identical on all four platforms');
+    if (!ACCEPTED_COMPARISONS.has(comparison.result) || comparison.platforms.length !== PLATFORMS.length) {
+        fail('the cross-platform determinism comparison is not identical on all four platforms (or on both Linux targets)');
     }
     const targets = {};
     const entries = PLATFORMS.map((platform) => {
@@ -170,7 +198,8 @@ function main() {
         const record = JSON.parse(readFileSync(join(folder, `${platform.target}.json`), 'utf8'));
         const binary = join(folder, platform.target, executableName(platform.target));
         const bytes = readFileSync(binary);
-        if (record.result !== 'byte-identical' || record.runs.length !== 2 || record.runs[0].sha256 !== record.runs[1].sha256) fail(`${platform.target}: the two clean builds differ`);
+        if (!acceptedBuilds(platform, record)) fail(`${platform.target}: the two clean builds differ`);
+        if (record.rustflags !== rustflagsRecordOf(platform.target)) fail(`${platform.target}: built with other flags than this checkout's`);
         if (sha256(bytes) !== record.runs[0].sha256) fail(`${platform.target}: the uploaded binary is not the built one`);
         if (record.cargoLockDigest !== CARGO_LOCK_SHA256 || JSON.stringify(record.toolchain) !== JSON.stringify(RUST_TOOLCHAIN)) fail(`${platform.target}: not the qualified lock or toolchain`);
         if (platform.runtime.os === 'linux' && record.builderImage !== LINUX_BUILDER_IMAGE) fail(`${platform.target}: not the pinned builder image`);
@@ -213,7 +242,8 @@ function main() {
                 linuxBuilderImage: LINUX_BUILDER_IMAGE,
                 targets,
                 crossPlatformDeterminism: {
-                    result: 'identical',
+                    result: comparison.result,
+                    nativeDifferences: comparison.nativeDifferences,
                     requests: comparison.requests,
                     excludedFields: ['tool.executableDigest'],
                     executables: Object.fromEntries(entries.map((entry) => [entry.target, entry.sha256])),

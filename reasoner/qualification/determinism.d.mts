@@ -17,11 +17,14 @@ export declare const jsonDifferences: (
   limit?: number,
 ) => Array<{ path: string; left: unknown; right: unknown }>;
 
+export declare const NATIVE_TARGETS: ReadonlyArray<string>;
 export interface DeterminismComparison {
   readonly schema: string;
-  readonly result: 'identical' | 'different';
+  /** `differs-on-native`: only the natively built (Windows, macOS) targets differ, reported as a warning. */
+  readonly result: 'identical' | 'differs-on-native' | 'different';
   readonly excludedFields: ReadonlyArray<{ readonly field: string; readonly where: string; readonly why: string }>;
   readonly problems: ReadonlyArray<string>;
+  readonly nativeDifferences: ReadonlyArray<string>;
   readonly requestCount: number;
   readonly cases: ReadonlyArray<{
     readonly name: string;

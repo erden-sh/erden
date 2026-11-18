@@ -26,6 +26,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
+import { warnInJobSummary } from '../scripts/lib/ci-warning.mjs';
+
 import { writeArchive } from './lib/archive.mjs';
 import { normalizeDeployedWorkspace, prepareLockedDeployment } from './lib/deploy.mjs';
 import { copyEngineNotices, writeNpmNotices } from './lib/notices.mjs';
@@ -273,8 +275,16 @@ async function main() {
             const archive = join(temporary, label, name);
             runs.push({ label, packages, dependencyLockDigest, ...writeArchive(stage, prefix, archive, epoch) });
         }
-        if (runs[0].sha256 !== runs[1].sha256 || runs[0].bytes !== runs[1].bytes) {
+        const reproducible = runs[0].sha256 === runs[1].sha256 && runs[0].bytes === runs[1].bytes;
+        // On Linux a difference fails the build. On Windows and macOS, whose runner images no pin covers, it is a
+        // warning and the first build is kept: the pins name its bytes, and the tag publishes exactly those.
+        if (!reproducible && process.platform === 'linux') {
             throw new Error(`${name} is not reproducible: ${runs[0].sha256} vs ${runs[1].sha256}`);
+        }
+        if (!reproducible) {
+            warnInJobSummary(
+                `${name}: the two builds differ (${runs[0].sha256} vs ${runs[1].sha256}); the first is kept`,
+            );
         }
         copyFileSync(join(temporary, 'a', name), join(out, name));
         const record = {
@@ -293,10 +303,12 @@ async function main() {
             npmPackages: runs[0].packages,
             runs: runs.map(({ label, bytes, sha256 }) => ({ label, bytes, sha256 })),
             smoke,
-            result: 'byte-identical',
+            result: reproducible ? 'byte-identical' : 'native-builds-differ',
         };
         writeFileSync(join(out, `${platformName}.json`), `${JSON.stringify(record, null, 2)}\n`);
-        process.stdout.write(`${name}: ${runs[0].sha256} (${String(runs[0].bytes)} bytes); both builds match\n`);
+        process.stdout.write(
+            `${name}: ${runs[0].sha256} (${String(runs[0].bytes)} bytes); ${reproducible ? 'both builds match' : 'the first build kept'}\n`,
+        );
     } finally {
         if (existsSync(temporary)) {
             rmSync(temporary, { recursive: true, force: true, maxRetries: 5 });

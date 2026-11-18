@@ -11,6 +11,7 @@ import {
   REPRODUCIBLE_TARGETS,
   nativeBuildEnvironment,
   planBuild,
+  rustflagsRecordOf,
 } from './verify-binary-reproducible.mjs';
 
 const qualification = import.meta.dirname;
@@ -63,9 +64,10 @@ describe('Unix reproducible build plan', () => {
     );
     expect(plan.kind).toBe('native');
     if (plan.kind !== 'native') return;
-    expect(plan.rustflagsRecord).toBe(recorded.windows.rustflags);
+    // The 0.2 record predates the static CRT, which the plan now adds before the record's flags.
+    expect(plan.rustflagsRecord).toBe(`-C target-feature=+crt-static ${recorded.windows.rustflags}`);
     expect(plan.env.RUSTFLAGS).toBe(
-      '-C link-arg=/Brepro --remap-path-prefix=C:\\t\\a\\reasoner=/erden-reasoner --remap-path-prefix=C:\\Users\\u\\.cargo=/cargo',
+      '-C target-feature=+crt-static -C link-arg=/Brepro --remap-path-prefix=C:\\t\\a\\reasoner=/erden-reasoner --remap-path-prefix=C:\\Users\\u\\.cargo=/cargo',
     );
     expect(plan.env).toMatchObject({ CARGO_INCREMENTAL: '0', SOURCE_DATE_EPOCH: '1785703783' });
     expect(plan.args).toEqual([
@@ -86,6 +88,21 @@ describe('Unix reproducible build plan', () => {
     expect(plan.env.RUSTFLAGS).toBe('--remap-path-prefix=/tmp/a/reasoner=/erden-reasoner --remap-path-prefix=/Users/u/.cargo=/cargo');
     expect(plan.rustflagsRecord).toBe('--remap-path-prefix=<reasoner>=/erden-reasoner --remap-path-prefix=<cargo-home>=/cargo');
     expect(plan.binaryRelativePath).toBe('aarch64-apple-darwin/release/erden-reasoner');
+  });
+
+  test('names the flags a record of each target holds, on any host, the same as its build plan', () => {
+    const hosts = {
+      'x86_64-unknown-linux-gnu': { platform: 'linux', arch: 'x64' },
+      'aarch64-unknown-linux-gnu': { platform: 'linux', arch: 'arm64' },
+      'x86_64-pc-windows-msvc': { platform: 'win32', arch: 'x64' },
+      'aarch64-apple-darwin': { platform: 'darwin', arch: 'arm64' },
+    } as const;
+    for (const target of REPRODUCIBLE_TARGETS) {
+      const plan = planBuild(target, hosts[target as keyof typeof hosts], { sourceDirectory: '/s', cargoHome: '/c' });
+      expect(rustflagsRecordOf(target)).toBe(plan.rustflagsRecord);
+    }
+    // The Windows engines link the C runtime statically, so they need no Visual C++ Redistributable.
+    expect(rustflagsRecordOf('x86_64-pc-windows-msvc')).toMatch(/^-C target-feature=\+crt-static /u);
   });
 
   test('refuses to build a target on a host that would need emulation or cross-linking', () => {
@@ -197,6 +214,7 @@ function makeSandbox(): Sandbox {
   const repository = join(root, 'repository');
   const reasoner = join(repository, 'reasoner');
   put(join(reasoner, 'qualification/verify-binary-reproducible.mjs'), readFileSync(join(qualification, 'verify-binary-reproducible.mjs'), 'utf8'));
+  put(join(repository, 'scripts/lib/ci-warning.mjs'), readFileSync(join(qualification, '../../scripts/lib/ci-warning.mjs'), 'utf8'));
   put(join(reasoner, 'Cargo.lock'), STUB_LOCK);
   put(join(reasoner, 'erden-reasoner/src/main.rs'), 'fn main() {}\n');
   put(

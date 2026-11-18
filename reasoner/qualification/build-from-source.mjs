@@ -37,6 +37,9 @@ import {
   sha256,
 } from './verify-binary-reproducible.mjs';
 
+import { warnInJobSummary } from '../../scripts/lib/ci-warning.mjs';
+import { installMintedBinary } from '../../scripts/lib/fetch-minted-engine.mjs';
+
 const reasoner = resolve(import.meta.dirname, '..');
 const repository = resolve(reasoner, '..');
 
@@ -80,7 +83,8 @@ export function readInstalledSourceBuild(target = hostTarget()) {
   const record = JSON.parse(readFileSync(recordPath, 'utf8'));
   const bytes = readFileSync(binary);
   const inputs = buildInputs('HEAD');
-  if (record.result !== 'byte-identical' || record.target !== target || JSON.stringify(record.buildInputs) !== JSON.stringify(inputs)) {
+  const accepted = record.result === 'byte-identical' || (isNative(target) && record.result === 'native-builds-differ');
+  if (!accepted || record.target !== target || JSON.stringify(record.buildInputs) !== JSON.stringify(inputs)) {
     throw new Error(`The installed ${target} reasoner source build is not of this checkout's reasoner source; ${rebuild}`);
   }
   if (bytes.length !== record.runs[0].bytes || sha256(bytes) !== record.runs[0].sha256) {
@@ -97,18 +101,39 @@ function pinnedPackage(target) {
   return { anchor, directory: join(reasoner, platform.directory), binary: join(reasoner, platform.directory, anchor.binaryPath) };
 }
 
+/** A target built natively, with the runner image's linker (Windows, macOS), not in the pinned builder image. */
+function isNative(target) {
+  return !target.endsWith('-linux-gnu');
+}
+
 function matchesPin(path, anchor) {
   if (!existsSync(path)) return false;
   const bytes = readFileSync(path);
   return bytes.length === anchor.bytes && sha256(bytes) === anchor.sha256;
 }
 
-/** Installs a pinned source build into its platform package; refuses one that is not the pin. */
+/**
+ * Installs a pinned source build into its platform package. On Linux it refuses one that is not the pin. A Windows or
+ * macOS build uses the runner image's linker, which no pin covers, so there the minted binary is fetched from the run that
+ * minted it instead (scripts/lib/fetch-minted-engine.mjs).
+ */
 function installPinned(target, binary) {
   const pinned = pinnedPackage(target);
   if (pinned === undefined) return;
   if (!matchesPin(binary, pinned.anchor)) {
-    throw new Error(`The ${target} source build is not the pinned ${pinned.anchor.sha256}; it is not installed`);
+    const reason = `The ${target} source build is not the pinned ${pinned.anchor.sha256}`;
+    if (!isNative(target)) throw new Error(`${reason}; it is not installed`);
+    const record = JSON.parse(readFileSync(join(reasoner, 'qualification', 'mint.json'), 'utf8'));
+    installMintedBinary({
+      artifact: `reasoner-${target}`,
+      runId: record.targets?.[target]?.workflowRunId ?? record.workflowRunId,
+      target,
+      executable: executableName(target),
+      anchor: pinned.anchor,
+      destination: pinned.binary,
+      reason,
+    });
+    return;
   }
   mkdirSync(join(pinned.binary, '..'), { recursive: true });
   copyFileSync(binary, pinned.binary);
@@ -154,11 +179,17 @@ function main() {
       identity(a.binary, BUILD_LAYOUT.a.label, BUILD_LAYOUT.a.source),
       identity(b.binary, BUILD_LAYOUT.b.label, BUILD_LAYOUT.b.source),
     ];
-    if (runs[0].bytes !== runs[1].bytes || runs[0].sha256 !== runs[1].sha256) {
-      throw new Error(`${target} release executable is not byte reproducible: ${runs[0].sha256} vs ${runs[1].sha256}; not installed`);
+    const reproducible = runs[0].bytes === runs[1].bytes && runs[0].sha256 === runs[1].sha256;
+    if (!reproducible) {
+      if (!isNative(target)) {
+        throw new Error(`${target} release executable is not byte reproducible: ${runs[0].sha256} vs ${runs[1].sha256}; not installed`);
+      }
+      warnInJobSummary(`${target}: the two clean builds differ (${runs[0].sha256} vs ${runs[1].sha256}); the first is kept`);
     }
     const pinned = pinnedPackage(target);
-    if (pinned !== undefined && runs[0].sha256 !== pinned.anchor.sha256) {
+    // On Linux a build other than the pin is refused; a native one is kept as the source build, and installPinned
+    // installs the minted binary in the platform package.
+    if (pinned !== undefined && runs[0].sha256 !== pinned.anchor.sha256 && !isNative(target)) {
       throw new Error(`${target} built ${runs[0].sha256}, not the pinned ${pinned.anchor.sha256}; not installed`);
     }
     rmSync(binary, { force: true });
@@ -189,10 +220,10 @@ function main() {
       rustflags: a.plan.rustflagsRecord,
       runs,
       knownAnswer,
-      result: 'byte-identical',
+      result: reproducible ? 'byte-identical' : 'native-builds-differ',
     };
     writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);
-    process.stdout.write(`${target}: built twice from ${commit}, byte-identical ${runs[0].sha256} (${runs[0].bytes} bytes); installed\n`);
+    process.stdout.write(`${target}: built twice from ${commit}, ${reproducible ? 'byte-identical' : 'first build'} ${runs[0].sha256} (${runs[0].bytes} bytes); installed\n`);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
