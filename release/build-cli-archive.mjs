@@ -53,6 +53,16 @@ function run(command, args, options = {}) {
     return child.stdout;
 }
 
+/**
+ * The store the workspace's install filled, as a `--store-dir` argument. pnpm keeps a store per drive or filesystem, so
+ * an export in a temporary directory elsewhere (C: on a Windows runner whose checkout and store are on D:) would
+ * otherwise look in an empty store and fail offline.
+ */
+function workspaceStoreArguments() {
+    const store = dirname(run('pnpm', ['store', 'path'], { cwd: repository }).trim());
+    return ['--store-dir', windows && /\s/u.test(store) ? `"${store}"` : store];
+}
+
 function git(...args) {
     return execFileSync('git', ['-c', 'core.autocrlf=false', '-c', 'core.eol=lf', '-C', repository, ...args], {
         encoding: 'utf8',
@@ -119,7 +129,7 @@ rem Runs the Erden CLI with the Node.js runtime this archive ships.\r
 
 /** One build of the archive tree from an export, at `stage`. */
 function buildStage(source, stage, inputs) {
-    run('pnpm', ['install', '--frozen-lockfile', '--offline', '--ignore-scripts'], { cwd: source });
+    run('pnpm', ['install', '--frozen-lockfile', '--offline', '--ignore-scripts', ...inputs.store], { cwd: source });
     run('pnpm', ['run', 'build:runtime'], { cwd: source });
     const lib = join(stage, 'lib');
     const deployment = prepareLockedDeployment(source);
@@ -130,6 +140,7 @@ function buildStage(source, stage, inputs) {
         '--prod',
         '--offline',
         '--ignore-scripts',
+        ...inputs.store,
         '--config.node-linker=hoisted',
         '--config.inject-workspace-packages=true',
     ];
@@ -226,6 +237,7 @@ async function main() {
     mkdirSync(out, { recursive: true });
     const name = archiveName(version, platformName);
     const prefix = name.replace(/\.(?:tar\.gz|zip)$/u, '');
+    const store = workspaceStoreArguments();
     const temporary = mkdtempSync(join(realpathSync(tmpdir()), 'erden-cli-archive-'));
     try {
         const runs = [];
@@ -248,6 +260,7 @@ async function main() {
                 nodeArchive: resolve(values.node),
                 nodeRuntime,
                 platform,
+                store,
             });
             if (label === 'a') {
                 smoke = smokeTest(stage, join(source, 'examples/erden-demo'));
