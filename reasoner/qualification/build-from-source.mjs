@@ -94,7 +94,7 @@ function pinnedPackage(target) {
   const platform = PLATFORMS.find((entry) => entry.target === target);
   const anchor = QUALIFIED_REASONER_ARTIFACTS[platform.key];
   if (anchor.sha256 === null) return undefined;
-  return { anchor, binary: join(reasoner, platform.directory, anchor.binaryPath) };
+  return { anchor, directory: join(reasoner, platform.directory), binary: join(reasoner, platform.directory, anchor.binaryPath) };
 }
 
 function matchesPin(path, anchor) {
@@ -167,7 +167,13 @@ function main() {
     copyFileSync(a.binary, binary);
     chmodSync(binary, 0o755);
     installPinned(target, binary);
-    const knownAnswer = runBundledReasonerKnownAnswer({ sourceBuild: binary });
+    // A pinned build answers from its platform package, located directly: a checkout without a workspace install (the
+    // macOS CI job) has no node_modules to resolve it from.
+    const pinnedInstall = pinnedPackage(target);
+    const knownAnswer =
+      pinnedInstall === undefined
+        ? runBundledReasonerKnownAnswer({ sourceBuild: binary })
+        : runBundledReasonerKnownAnswer({ locatePackage: () => pinnedInstall.directory });
     const record = {
       schemaVersion: 1,
       kind: 'unreleased-source-build',
