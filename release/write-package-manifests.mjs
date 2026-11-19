@@ -30,15 +30,21 @@ function archive(pins, platform) {
     return pin;
 }
 
+/** The .tar.xz pin of `platform` where the release has one (Homebrew extracts it), else its .tar.gz. */
+function smallest(pins, platform) {
+    const primary = archive(pins, platform);
+    return pins.xzArchives?.[platform] ?? primary;
+}
+
 /**
- * The Homebrew formula: the macOS arm64 and the Linux x64 and arm64 (glibc) archives. Each holds its own Node.js and
- * engines, so the formula has no dependencies; it links `erden` and `den` and installs the shell completions where the
- * archive's CLI has `erden completions`.
+ * The Homebrew formula: the macOS arm64 and the Linux x64 and arm64 (glibc) archives, as .tar.xz where the release has
+ * them. Each holds its own Node.js and engines, so the formula has no dependencies; it links `erden` and `den` and
+ * installs the shell completions where the archive's CLI has `erden completions`.
  */
 export function homebrewFormula(pins) {
-    const macos = archive(pins, 'darwin-arm64');
-    const linuxArm = archive(pins, 'linux-arm64');
-    const linuxIntel = archive(pins, 'linux-x64');
+    const macos = smallest(pins, 'darwin-arm64');
+    const linuxArm = smallest(pins, 'linux-arm64');
+    const linuxIntel = smallest(pins, 'linux-x64');
     return `# Written by release/write-package-manifests.mjs in erden-sh/erden from release/pins/${pins.version}.json, and updated
 # by its release workflow. Do not edit by hand.
 class Erden < Formula
@@ -71,13 +77,15 @@ class Erden < Formula
 
   depends_on arch: :arm64 if OS.mac?
 
-  # The engines check their own SHA-256 before every run, so nothing in the archive may be rewritten.
+  # The engines check their own SHA-256 before every run, and bin/erden carries the CLI inside its Node.js, so nothing
+  # in the archive may be stripped or rewritten.
   skip_clean "libexec"
 
   def install
     libexec.install Dir["*"]
     bin.install_symlink libexec/"bin/erden", libexec/"bin/den"
-    if (libexec/"lib/dist/completions.js").exist?
+    # \`erden completions\` exists in every single-executable archive (no lib/dist) and in the others that ship it.
+    if !(libexec/"lib/dist").exist? || (libexec/"lib/dist/completions.js").exist?
       generate_completions_from_executable(bin/"erden", "completions")
     end
   end
@@ -111,7 +119,8 @@ export function scoopManifest(pins) {
                 extract_dir: windows.file.replace(/\.zip$/u, ''),
             },
         },
-        bin: ['bin\\erden.cmd', 'bin\\den.cmd'],
+        // A single-executable archive runs bin\erden.exe, with bin\den.cmd beside it; earlier ones bin\erden.cmd.
+        bin: [pins.layout === 'single-executable' ? 'bin\\erden.exe' : 'bin\\erden.cmd', 'bin\\den.cmd'],
         checkver: { github: REPOSITORY },
         autoupdate: {
             architecture: {

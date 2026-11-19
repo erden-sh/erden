@@ -2,18 +2,20 @@
 // examples/erden-demo as a user would: `erden doctor` (both engines verified), `erden init`, `erden check` and
 // `erden pack`. Then it changes one byte of the installed reasoner and requires `erden check` to refuse with the
 // integrity error. The install script is written for the archive's own build record, so this runs before the pins
-// are committed (in the mint) as well as after.
+// are committed (in the mint) as well as after. `--archive` is any archive the record names: the .tar.gz or .zip, or
+// the .tar.xz.
 //
 // On Linux (`--container`) everything runs in a pinned Ubuntu image, or for a musl archive a pinned Alpine image with
 // only the C++ runtime added (`apk add libstdc++ libgcc`, as Node.js on Alpine needs), with networking disabled
 // (`--network none`) and no Node.js of its own, as an unprivileged user. A musl archive of the other architecture runs
-// under QEMU with `--allow-emulation`, for a local rehearsal. Elsewhere it runs on the host with a temporary home.
+// under QEMU with `--allow-emulation`, for a local rehearsal. Elsewhere it runs on the host with a temporary home. The Ubuntu image has no xz, so a
+// glibc .tar.xz is tested on the host; the Alpine image has xz, as a musl .tar.xz needs it to install there.
 //
 // Usage: node release/test-install.mjs --archive <file> --record <platform>.json [--container [--allow-emulation]]
 import { spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { RELEASE_PLATFORMS, assertPinned } from './lib/platforms.mjs';
@@ -65,7 +67,10 @@ for file in doctor.json init.json check.json pack.json tampered-check.txt tamper
 done
 `;
 
-/** The same steps on Windows, through the installed `erden.cmd`. */
+/**
+ * The same steps on Windows, through the launchers install.ps1 writes to %LOCALAPPDATA%\Programs\Erden\bin: erden.cmd
+ * runs the version's erden.exe (the single executable), den.cmd its den.cmd.
+ */
 function windowsSteps(target, demo) {
     // The native real path expands an 8.3 short name, which `erden init` refuses as an aliased parent.
     const work = mkdtempSync(join(realpathSync.native(tmpdir()), 'erden-install-steps-'));
@@ -73,7 +78,7 @@ function windowsSteps(target, demo) {
     function erden(args, name = 'erden') {
         return spawnSync(
             process.env.ComSpec ?? 'cmd.exe',
-            ['/d', '/s', '/c', `""${join(target, 'bin', `${name}.cmd`)}" ${args}"`],
+            ['/d', '/s', '/c', `""${join(dirname(target), 'bin', `${name}.cmd`)}" ${args}"`],
             // `/s /c` takes off the outer quotes, and the launcher keeps its own; Node's quoting would escape them.
             {
                 cwd: work,
@@ -154,16 +159,30 @@ export function containerArguments(platformName, allowEmulation) {
     if (platform.libc !== 'musl') {
         return { platform: dockerPlatform, image: INSTALL_TEST_IMAGE };
     }
-    const tag = `erden-install-test-musl:${MUSL_INSTALL_TEST_IMAGE.slice(-12)}-${platform.cpu}`;
+    const tag = `erden-install-test-musl:${MUSL_INSTALL_TEST_IMAGE.slice(-12)}-xz-${platform.cpu}`;
     run('docker', ['build', '--quiet', ...dockerPlatform, '--tag', tag, '-'], {
-        input: `FROM ${MUSL_INSTALL_TEST_IMAGE}\nRUN apk add --no-cache libstdc++ libgcc\n`,
+        // xz too, so a musl .tar.xz installs here: a glibc host cannot run what it unpacks.
+        input: `FROM ${MUSL_INSTALL_TEST_IMAGE}\nRUN apk add --no-cache libstdc++ libgcc xz\n`,
     });
     return { platform: dockerPlatform, image: tag };
 }
 
-/** The pins of one built archive, enough to write install scripts that accept exactly it. */
-function pinsOfRecord(record) {
-    return { version: record.version, archives: { [record.platform]: record.archive } };
+/** The pins of one platform's build, enough to write install scripts that accept exactly its archives. */
+export function pinsOfRecord(record) {
+    return {
+        version: record.version,
+        archives: { [record.platform]: record.archive },
+        ...(record.xzArchive === undefined ? {} : { xzArchives: { [record.platform]: record.xzArchive } }),
+    };
+}
+
+/** The pin in `record` of the archive named `file`; refuses a file the record does not name. */
+export function recordPin(record, file) {
+    const pin = [record.archive, record.xzArchive].find((candidate) => candidate?.file === file);
+    if (pin === undefined) {
+        throw new Error(`${file} is not an archive of the ${record.platform} build record`);
+    }
+    return pin;
 }
 
 /** Checks the outputs the steps printed; returns a summary. */
@@ -217,7 +236,7 @@ function main() {
         throw new Error('Usage: test-install.mjs --archive <file> --record <platform>.json [--container]');
     }
     const record = JSON.parse(readFileSync(values.record, 'utf8'));
-    assertPinned(values.archive, record.archive, `${record.platform} archive`);
+    assertPinned(values.archive, recordPin(record, basename(values.archive)), `${record.platform} archive`);
     const scripts = installScripts(pinsOfRecord(record));
     const work = mkdtempSync(join(realpathSync.native(tmpdir()), 'erden-install-test-'));
     try {
@@ -273,7 +292,7 @@ function main() {
         }
         const summary = checkOutputs(output);
         process.stdout.write(
-            `${JSON.stringify({ platform: record.platform, container: values.container, ...summary })}\n`,
+            `${JSON.stringify({ platform: record.platform, archive: basename(values.archive), container: values.container, ...summary })}\n`,
         );
     } finally {
         rmSync(work, { recursive: true, force: true, maxRetries: 5 });

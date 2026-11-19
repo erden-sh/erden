@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isSea } from 'node:sea';
 import { fileURLToPath } from 'node:url';
 
 import { releaseChannel, type Installation } from './installation.js';
@@ -247,10 +248,22 @@ function finishSession(
     });
 }
 
+/**
+ * The first argument with which a release's single executable runs a background job instead of a command (sea.ts).
+ * It is not a command, so the CLI itself refuses it.
+ */
+export const BACKGROUND_JOB_ARGUMENT = '--erden-background-job';
+
+/** The arguments that start the background job: background.js under Node.js, or the single executable's own mode. */
+export function backgroundArguments(job: BackgroundJob, sea: boolean, script: string): string[] {
+    const encoded = Buffer.from(JSON.stringify(job), 'utf8').toString('base64url');
+    return sea ? [BACKGROUND_JOB_ARGUMENT, encoded] : [script, encoded];
+}
+
 /** Starts background.js detached, in the temporary directory, with no stdio, so this process exits without waiting. */
 export function spawnNodeBackground(job: BackgroundJob): void {
     const script = fileURLToPath(new URL('./background.js', import.meta.url));
-    const child = spawn(process.execPath, [script, Buffer.from(JSON.stringify(job), 'utf8').toString('base64url')], {
+    const child = spawn(process.execPath, backgroundArguments(job, isSea(), script), {
         cwd: tmpdir(),
         detached: true,
         stdio: 'ignore',

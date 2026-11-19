@@ -10,21 +10,25 @@ import {
     readdirSync,
     readlinkSync,
     rmSync,
+    symlinkSync,
     writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, win32 } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { writeArchive } from '../../release/lib/archive.mjs';
+import { writeArchive, writeArchives } from '../../release/lib/archive.mjs';
 import { RELEASE_PLATFORMS, archiveName, sha256 } from '../../release/lib/platforms.mjs';
 import { installScriptDifferences, installScripts } from '../../release/write-install-scripts.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const VERSION = '1.0.0';
 
-/** A release archive for `platform` holding a launcher that prints a marker, and pins naming it. */
-function fixture(platform = 'linux-x64', withAlias = true) {
+/**
+ * A release archive for `platform` holding a launcher that prints a marker, and pins naming it; on Linux and macOS
+ * also its .tar.xz (pinned unless `xz` is false).
+ */
+function fixture(platform = 'linux-x64', withAlias = true, xz = true) {
     const directory = mkdtempSync(join(tmpdir(), 'erden-install-test-'));
     const tree = join(directory, 'tree');
     mkdirSync(join(tree, 'bin'), { recursive: true });
@@ -36,31 +40,92 @@ function fixture(platform = 'linux-x64', withAlias = true) {
     }
     const file = archiveName(VERSION, platform);
     const archive = join(directory, file);
-    const pin = { file, ...writeArchive(tree, `erden-${VERSION}-${platform}`, archive, 1_700_000_000) };
+    const hasXz = RELEASE_PLATFORMS[platform].xz === true;
+    const xzFile = hasXz ? archiveName(VERSION, platform, 'tar.xz') : undefined;
+    const xzArchive = hasXz ? join(directory, xzFile) : undefined;
+    const [written, xzWritten] = writeArchives(
+        tree,
+        `erden-${VERSION}-${platform}`,
+        hasXz ? [archive, xzArchive] : [archive],
+        1_700_000_000,
+    );
+    const pin = { file, ...written };
     const archives = Object.fromEntries(
         Object.keys(RELEASE_PLATFORMS).map((name) => [
             name,
             name === platform ? pin : { file: archiveName(VERSION, name), bytes: 1, sha256: sha256('other') },
         ]),
     );
-    const pins = { version: VERSION, archives };
+    const xzArchives = Object.fromEntries(
+        Object.keys(RELEASE_PLATFORMS)
+            .filter((name) => RELEASE_PLATFORMS[name].xz === true)
+            .map((name) => [
+                name,
+                name === platform
+                    ? { file: xzFile, ...xzWritten }
+                    : { file: archiveName(VERSION, name, 'tar.xz'), bytes: 1, sha256: sha256('other') },
+            ]),
+    );
+    const pins = { version: VERSION, archives, ...(xz ? { xzArchives } : {}) };
     const script = join(directory, 'install.sh');
     writeFileSync(script, installScripts(pins)['install.sh']);
     const home = join(directory, 'home');
     mkdirSync(home);
     const shims = join(directory, 'shims');
     mkdirSync(shims);
-    return { directory, archive, script, home, shims, pins, file };
+    return { directory, archive, xzArchive, script, home, shims, pins, file, xzFile };
+}
+
+/** This host's xz, which the .tar.xz tests need; empty if it has none. */
+const HOST_XZ =
+    process.platform === 'win32' ? '' : spawnSync('sh', ['-c', 'command -v xz'], { encoding: 'utf8' }).stdout.trim();
+
+/**
+ * The host's tools for install.sh, every one in /usr/bin and /bin but xz, linked into a directory of their own: the
+ * PATH has xz only when a test puts it in its shims.
+ */
+function hostTools(directory) {
+    const tools = join(directory, 'tools');
+    mkdirSync(tools, { recursive: true });
+    for (const source of ['/usr/bin', '/bin']) {
+        if (!existsSync(source)) {
+            continue;
+        }
+        for (const name of readdirSync(source)) {
+            if (/^(?:xz|unxz|xzcat|lzma|unlzma|lzcat)$/u.test(name) || existsSync(join(tools, name))) {
+                continue;
+            }
+            symlinkSync(join(source, name), join(tools, name));
+        }
+    }
+    return tools;
 }
 
 /**
  * A PATH shim: `uname` answers as `system`/`machine`, `sysctl` reports Rosetta 2 when `translated`, and `curl` logs its
- * arguments and copies to its -o target `served`, or the file `routes` gives for the URL's last segment.
+ * arguments and copies to its -o target `served`, or the file `routes` gives for the URL's last segment. `xz` decides
+ * whether the PATH has xz: false (none, the default), true (the host's), or 'bsdtar' (none, but a `tar` that reads xz
+ * itself, as macOS's does).
  */
 function shim(
     context,
-    { system = 'Linux', machine = 'x86_64', served, routes = {}, musl = false, translated = false } = {},
+    { system = 'Linux', machine = 'x86_64', served, routes = {}, musl = false, translated = false, xz = false } = {},
 ) {
+    for (const name of ['xz', 'tar']) {
+        rmSync(join(context.shims, name), { force: true });
+    }
+    if (xz === true) {
+        symlinkSync(HOST_XZ, join(context.shims, 'xz'));
+    }
+    if (xz === 'bsdtar') {
+        const hostTar = spawnSync('sh', ['-c', 'command -v tar'], { encoding: 'utf8' }).stdout.trim();
+        writeFileSync(
+            join(context.shims, 'tar'),
+            `#!/bin/sh\ncase "$1" in\n    --version) echo 'bsdtar 3.7.4 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3' ;;\n` +
+                `    -xJf) "${HOST_XZ}" -dc "$2" | "${hostTar}" -xf - ;;\n    *) exec "${hostTar}" "$@" ;;\nesac\n`,
+        );
+        chmodSync(join(context.shims, 'tar'), 0o755);
+    }
     writeFileSync(
         join(context.shims, 'uname'),
         `#!/bin/sh\ncase "$1" in -s) echo ${system} ;; -m) echo ${machine} ;; esac\n`,
@@ -87,9 +152,10 @@ function shim(
 
 /** Runs install.sh with `args`; `environment` adds variables (SHELL is unset unless given). */
 function install(context, args, environment = {}) {
-    return spawnSync('sh', [context.script, ...args], {
+    context.tools ??= hostTools(context.directory);
+    return spawnSync('/bin/sh', [context.script, ...args], {
         encoding: 'utf8',
-        env: { PATH: `${context.shims}:/usr/bin:/bin`, HOME: context.home, ...environment },
+        env: { PATH: `${context.shims}:${context.tools}`, HOME: context.home, ...environment },
     });
 }
 
@@ -195,6 +261,84 @@ describe('install.sh', { skip: process.platform === 'win32' }, () => {
             rmSync(context.directory, { recursive: true, force: true });
         }
     });
+
+    it(
+        'downloads the .tar.xz when xz is here, and the .tar.gz when it is not',
+        { skip: HOST_XZ === '' && 'no xz' },
+        () => {
+            for (const [xz, expected] of [
+                [true, 'xzFile'],
+                ['bsdtar', 'xzFile'],
+                [false, 'file'],
+            ]) {
+                const context = fixture();
+                try {
+                    shim(context, { served: xz === false ? context.archive : context.xzArchive, xz });
+                    const result = install(context, []);
+                    assert.equal(result.status, 0, `${String(xz)}: ${result.stderr}`);
+                    const request = readFileSync(join(context.directory, 'curl.log'), 'utf8');
+                    assert.match(request, new RegExp(`/v1\\.0\\.0/${context[expected].replaceAll('.', '\\.')}$`, 'mu'));
+                    const target = join(context.home, '.local', 'share', 'erden', VERSION);
+                    assert.equal(
+                        spawnSync(join(target, 'bin', 'erden'), ['check'], { encoding: 'utf8' }).stdout,
+                        'installed-erden check\n',
+                    );
+                } finally {
+                    rmSync(context.directory, { recursive: true, force: true });
+                }
+            }
+        },
+    );
+
+    it(
+        'installs a local .tar.xz, and refuses one where nothing can extract it or the release has none',
+        { skip: HOST_XZ === '' && 'no xz' },
+        () => {
+            const context = fixture();
+            try {
+                shim(context, { xz: true });
+                let result = install(context, ['--archive', context.xzArchive]);
+                assert.equal(result.status, 0, result.stderr);
+                assert.ok(existsSync(join(context.home, '.local', 'share', 'erden', VERSION, 'bin', 'den')));
+                const swapped = join(context.directory, 'swapped.tar.xz');
+                const bytes = readFileSync(context.xzArchive);
+                bytes[bytes.length - 1] ^= 1;
+                writeFileSync(swapped, bytes);
+                result = install(context, ['--archive', swapped]);
+                assert.equal(result.status, 1);
+                assert.match(
+                    result.stderr,
+                    /SHA-256 is not the one erden-1\.0\.0-linux-x64\.tar\.xz was released with/u,
+                );
+                shim(context, { xz: false });
+                result = install(context, ['--archive', context.xzArchive]);
+                assert.equal(result.status, 1);
+                assert.match(
+                    result.stderr,
+                    /extracting erden-1\.0\.0-linux-x64\.tar\.xz needs xz; install xz or use /u,
+                );
+                result = install(context, ['--archive', context.archive]);
+                assert.equal(result.status, 0, 'the .tar.gz needs no xz');
+            } finally {
+                rmSync(context.directory, { recursive: true, force: true });
+            }
+            const older = fixture('linux-x64', true, false);
+            try {
+                shim(older, { served: older.archive });
+                let result = install(older, ['--archive', older.xzArchive]);
+                assert.equal(result.status, 1);
+                assert.match(
+                    result.stderr,
+                    /has no \.tar\.xz archive for linux-x64; use erden-1\.0\.0-linux-x64\.tar\.gz/u,
+                );
+                result = install(older, []);
+                assert.equal(result.status, 0, 'a release pinned without a .tar.xz installs its .tar.gz');
+                assert.match(readFileSync(join(older.directory, 'curl.log'), 'utf8'), /linux-x64\.tar\.gz$/mu);
+            } finally {
+                rmSync(older.directory, { recursive: true, force: true });
+            }
+        },
+    );
 
     it('refuses unsupported platforms before anything is downloaded', () => {
         const context = fixture();
@@ -312,7 +456,8 @@ describe('install.sh', { skip: process.platform === 'win32' }, () => {
         try {
             shim(context, { served: context.archive });
             const text = readFileSync(context.script, 'utf8');
-            const environment = { PATH: `${context.shims}:/usr/bin:/bin`, HOME: context.home };
+            context.tools ??= hostTools(context.directory);
+            const environment = { PATH: `${context.shims}:${context.tools}`, HOME: context.home };
             let result = spawnSync('sh', ['-s', '--', '--no-modify-path'], {
                 input: text,
                 encoding: 'utf8',
@@ -404,11 +549,17 @@ const POWERSHELL = ['pwsh', 'powershell'].find(
  * run in a copy whose platform check is forced, with the user's data folder under a temporary home. The copy keeps the
  * user PATH in a file instead of the registry, so no test changes the PATH of the machine it runs on.
  */
-function powershellFixture() {
+function powershellFixture(singleExecutable = true) {
     const context = fixture('win32-x64');
     const windows = process.platform === 'win32';
     const tree = join(context.directory, 'tree');
-    writeFileSync(join(tree, 'bin', 'erden.cmd'), '@echo off\r\necho installed-erden %*\r\n');
+    if (singleExecutable) {
+        // bin\erden.exe, the single executable: only its presence is checked, as install.ps1 runs nothing it installs.
+        writeFileSync(join(tree, 'bin', 'erden.exe'), 'MZ');
+    } else {
+        // An archive from before the single executable.
+        writeFileSync(join(tree, 'bin', 'erden.cmd'), '@echo off\r\necho installed-erden %*\r\n');
+    }
     writeFileSync(join(tree, 'bin', 'den.cmd'), '@echo off\r\necho installed-erden %*\r\n');
     const pin = {
         file: context.file,
@@ -500,7 +651,7 @@ describe('install.ps1', { skip: POWERSHELL === undefined ? 'no PowerShell on thi
             result = context.run(context.forced, ['-Archive', context.archive]);
             assert.equal(result.status, 0, result.stderr);
             assert.match(result.stdout, /Installed Erden 1\.0\.0 to /u);
-            assert.ok(existsSync(join(context.programs, VERSION, 'bin', 'erden.cmd')));
+            assert.ok(existsSync(join(context.programs, VERSION, 'bin', 'erden.exe')));
             assert.ok(existsSync(join(context.programs, VERSION, 'bin', 'den.cmd')));
             assert.deepEqual(readdirSync(context.programs).sort(), [VERSION, 'bin']);
         } finally {
@@ -508,8 +659,28 @@ describe('install.ps1', { skip: POWERSHELL === undefined ? 'no PowerShell on thi
         }
     });
 
+    it("writes launchers that run the single executable, or an earlier archive's erden.cmd", () => {
+        for (const singleExecutable of [true, false]) {
+            const context = powershellFixture(singleExecutable);
+            try {
+                const bin = join(context.programs, 'bin');
+                const result = context.run(context.forced, ['-Archive', context.archive, '-NoModifyPath']);
+                assert.equal(result.status, 0, result.stderr);
+                const launcher = readFileSync(join(bin, 'erden.cmd'), 'utf8');
+                const runs = singleExecutable ? 'erden.exe' : 'erden.cmd';
+                assert.ok(launcher.includes(`"%~dp0..\\${VERSION}\\bin\\${runs}" %*\r\n`), launcher);
+                assert.ok(
+                    readFileSync(join(bin, 'den.cmd'), 'utf8').includes(`"%~dp0..\\${VERSION}\\bin\\den.cmd" %*\r\n`),
+                );
+            } finally {
+                rmSync(context.directory, { recursive: true, force: true });
+            }
+        }
+    });
+
     it('adds its bin folder to the user PATH once, keeps the other entries as stored, and -Uninstall removes it', () => {
-        const context = powershellFixture();
+        // An earlier archive's erden.cmd, which the launchers can run here; the fixture's erden.exe is not a program.
+        const context = powershellFixture(false);
         try {
             const bin = join(context.programs, 'bin');
             writeFileSync(context.userPath, '%USERPROFILE%\\tools;C:\\Other');
@@ -519,7 +690,6 @@ describe('install.ps1', { skip: POWERSHELL === undefined ? 'no PowerShell on thi
             assert.equal(readFileSync(context.userPath, 'utf8'), `${bin};%USERPROFILE%\\tools;C:\\Other`);
             const launcher = readFileSync(join(bin, 'erden.cmd'), 'utf8');
             assert.match(launcher, /^@echo off\r\n/u);
-            assert.ok(launcher.includes(`"%~dp0..\\${VERSION}\\bin\\erden.cmd" %*\r\n`), launcher);
             assert.ok(existsSync(join(bin, 'den.cmd')));
             if (process.platform === 'win32') {
                 for (const name of ['erden', 'den']) {

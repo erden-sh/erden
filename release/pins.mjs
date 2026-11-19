@@ -9,9 +9,10 @@
 //       on version, commit and epoch, and each archive is the one its record names. --allow-partial accepts fewer
 //       platforms, for a local rehearsal; `verify --release` refuses such pins.
 //   node release/pins.mjs verify --artifacts <dir> [--release] [--tag v<version>]
-//       Refuses unless every archive in <dir> is byte for byte the one release/pins/<version>.json in this checkout
-//       pins, every pinned platform is present, and each record's engines are the pinned ones. --release also
-//       requires all six platforms and, with --tag, that the tag names the pinned version.
+//       Refuses unless every archive in <dir> (the .tar.gz or .zip, and the .tar.xz where a platform has one) is byte for
+//       byte the one release/pins/<version>.json in this checkout pins, every pinned platform is present, and each
+//       record's engines are the pinned ones. --release also requires all six platforms, a .tar.xz on every platform
+//       that ships one and, with --tag, that the tag names the pinned version.
 //   node release/pins.mjs mint-run --version <version>
 //       Prints the mint run whose archive artifacts the tag publishes.
 import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -45,6 +46,9 @@ function readRecords(directory) {
                 throw new Error(`${platform}: the two builds were not identical`);
             }
             assertPinned(join(directory, record.archive.file), record.archive, `${platform} archive`);
+            if (record.xzArchive !== undefined) {
+                assertPinned(join(directory, record.xzArchive.file), record.xzArchive, `${platform} .tar.xz archive`);
+            }
             records[platform] = record;
         }
     }
@@ -60,6 +64,15 @@ function single(records, field) {
         throw new Error(`The platform builds disagree on ${field}`);
     }
     return JSON.parse([...values][0]);
+}
+
+/** Whether the builds are single executables; refuses records that disagree. */
+function singleExecutable(records) {
+    const kinds = new Set(Object.values(records).map((record) => record.singleExecutable !== undefined));
+    if (kinds.size !== 1) {
+        throw new Error('The platform builds disagree on the archive layout');
+    }
+    return [...kinds][0];
 }
 
 /** The pins file a mint writes from its build records. */
@@ -82,9 +95,25 @@ export function pinsOf(records, { allowPartial = false, mintRunId } = {}) {
             'node',
         ),
         complete: missing.length === 0,
+        // How the archives lay out the CLI: 'single-executable' (bin/erden is Node.js with the CLI built in) when every
+        // build record says so. Pins without it are of archives that run lib/dist/bin.js with node/node.
+        ...(singleExecutable(records) ? { layout: 'single-executable' } : {}),
         // The release run whose archive artifacts these pins name; the tag fetches and publishes exactly those.
         ...(mintRunId === undefined ? {} : { mintRunId }),
         archives: Object.fromEntries(platforms.map((platform) => [platform, records[platform].archive])),
+        // The .tar.xz beside the .tar.gz, on the platforms that ship one; the install script prefers it.
+        ...(platforms.some((platform) => records[platform].xzArchive !== undefined)
+            ? {
+                  xzArchives: Object.fromEntries(
+                      platforms
+                          .filter((platform) => records[platform].xzArchive !== undefined)
+                          .map((platform) => {
+                              const { file, bytes, sha256: digest } = records[platform].xzArchive;
+                              return [platform, { file, bytes, sha256: digest }];
+                          }),
+                  ),
+              }
+            : {}),
         engines: Object.fromEntries(
             ['reasoner', 'shacl'].map((engine) => [
                 engine,
@@ -128,6 +157,22 @@ export function pinDifferences(pins, records, { release: releaseMode = false } =
         ) {
             differences.push(
                 `${platform}: ${record.archive.file} is ${record.archive.sha256} (${String(record.archive.bytes)} bytes), pinned ${pin.sha256} (${String(pin.bytes)} bytes)`,
+            );
+        }
+        const xzPin = pins.xzArchives?.[platform];
+        const xz = record.xzArchive;
+        if (releaseMode && RELEASE_PLATFORMS[platform].xz === true && xzPin === undefined) {
+            differences.push(`${platform}: no .tar.xz archive pinned`);
+        } else if (xz === undefined && xzPin !== undefined) {
+            differences.push(`${platform}: ${xzPin.file} pinned but not built`);
+        } else if (xz !== undefined && xzPin === undefined) {
+            differences.push(`${platform}: ${xz.file} built but not pinned`);
+        } else if (
+            xz !== undefined &&
+            (xz.file !== xzPin.file || xz.bytes !== xzPin.bytes || xz.sha256 !== xzPin.sha256)
+        ) {
+            differences.push(
+                `${platform}: ${xz.file} is ${xz.sha256} (${String(xz.bytes)} bytes), pinned ${xzPin.sha256} (${String(xzPin.bytes)} bytes)`,
             );
         }
         for (const engine of ['reasoner', 'shacl']) {

@@ -1,8 +1,10 @@
 // Checks a published release as a user meets it, on the platform it runs on: downloads the install script, SHA256SUMS
-// and this platform's archive from the release itself, checks the digests, installs with the script over the network,
-// runs `erden --version`, `erden doctor` and an offline `erden check` of the demo in a fresh directory, and reads the
-// live registry through the installed CLI. Then it requires the install script to refuse a changed and a truncated
-// archive, leaving nothing installed. It changes nothing on the registry.
+// and this platform's archives (the .tar.gz and .tar.xz on Linux and macOS, the .zip on Windows) from the release
+// itself, checks the digests, installs with the script over the network, runs `erden --version`, `erden doctor` and
+// an offline `erden check` of the demo in a fresh directory, and reads the live registry through the installed CLI.
+// It installs each downloaded archive again offline (`--archive`) and runs `erden --version` from it. Then it requires
+// the install script to refuse a changed and a truncated archive, leaving nothing installed. It changes nothing on the
+// registry.
 //
 // `--platform linux-x64-musl` (or linux-arm64-musl, on an arm64 host) checks the musl archive the same way inside the
 // pinned Alpine image with libstdc++ (test-install.mjs builds it): the install over the network, `erden --version`,
@@ -95,6 +97,11 @@ function installedTarget(home, version) {
 
 function erdenCommand(home, version, args) {
     if (process.platform === 'win32') {
+        // The single executable; releases from before it ran through bin\\erden.cmd.
+        const executable = join(installedTarget(home, version), 'bin', 'erden.exe');
+        if (existsSync(executable)) {
+            return [executable, args];
+        }
         return [
             process.env.ComSpec ?? 'cmd.exe',
             // `/s /c` takes off the outer quotes; each part keeps its own, for paths with spaces.
@@ -226,15 +233,24 @@ function main(values) {
         // short prefix keeps the Windows install, extracted under home\AppData\Local, within the 260-character limit.
         const work = mkdtempSync(join(realpathSync.native(tmpdir()), 'erden-vp-'));
         const scriptName = process.platform === 'win32' ? 'install.ps1' : 'install.sh';
-        const archiveName = `erden-${version}-${platform}.${process.platform === 'win32' ? 'zip' : 'tar.gz'}`;
+        const archiveNames = (process.platform === 'win32' ? ['zip'] : ['tar.gz', 'tar.xz']).map(
+            (format) => `erden-${version}-${platform}.${format}`,
+        );
         const sums = (await download(`${base}/SHA256SUMS`)).toString('utf8');
         const script = await download(`${base}/${scriptName}`);
-        const archive = await download(`${base}/${archiveName}`);
         assertListed(sums, scriptName, script);
-        assertListed(sums, archiveName, archive);
+        const archives = [];
+        for (const name of archiveNames) {
+            const bytes = await download(`${base}/${name}`);
+            assertListed(sums, name, bytes);
+            const path = join(work, name);
+            writeFileSync(path, bytes);
+            archives.push({ name, bytes, path });
+            console.log(`${name}: ${String(bytes.byteLength)} bytes, sha256:${sha256(bytes)}, listed`);
+        }
+        const [{ name: archiveName, bytes: archive }] = archives;
         const scriptPath = join(work, scriptName);
         writeFileSync(scriptPath, script);
-        console.log(`${archiveName}: ${String(archive.byteLength)} bytes, sha256:${sha256(archive)}, listed`);
 
         const home = join(work, 'home');
         mkdirSync(home);
@@ -311,17 +327,43 @@ function main(values) {
         if (absent.status !== 404) {
             throw new Error(`The registry answered ${String(absent.status)} for an absent alias`);
         }
-        const add = spawnSync(...erdenCommand(home, version, ['add', `${alias}@1.0.0`, '--json']), {
+        const [addCommand, addArguments] = erdenCommand(home, version, ['add', `${alias}@1.0.0`, '--json']);
+        const add = spawnSync(addCommand, addArguments, {
             cwd: project,
             encoding: 'utf8',
             env: environment,
             windowsHide: true,
-            windowsVerbatimArguments: process.platform === 'win32',
+            windowsVerbatimArguments: addCommand.toLowerCase().endsWith('cmd.exe'),
         });
         if (add.status !== 3 || !`${add.stdout}${add.stderr}`.includes('PROJECT_DEPENDENCIES_RESOLUTION_FAILED')) {
             throw new Error(`erden add of an absent alias: ${String(add.status)}\n${add.stderr}${add.stdout}`);
         }
         console.log('erden add of an absent alias: the live registry answered not found');
+
+        // Each archive installs offline too, in a home of its own.
+        for (const { name, path } of archives) {
+            const offlineHome = join(work, `offline-${name}`);
+            mkdirSync(offlineHome);
+            const offline = spawnSync(...installArguments(scriptPath, path), {
+                encoding: 'utf8',
+                env: homeEnvironment(offlineHome),
+                windowsHide: true,
+            });
+            if (offline.status !== 0) {
+                throw new Error(`The install script refused ${name}: ${offline.stderr}${offline.stdout}`);
+            }
+            const [command, args] = erdenCommand(offlineHome, version, ['--version']);
+            const offlineVersion = spawnSync(command, args, {
+                encoding: 'utf8',
+                env: homeEnvironment(offlineHome),
+                windowsHide: true,
+                windowsVerbatimArguments: command.toLowerCase().endsWith('cmd.exe'),
+            });
+            if (offlineVersion.status !== 0 || offlineVersion.stdout.trim() !== version) {
+                throw new Error(`erden --version from ${name}: ${offlineVersion.stderr}${offlineVersion.stdout}`);
+            }
+            console.log(`${name} installed offline: erden --version ${version}`);
+        }
 
         // The script carries the digests: a changed or short archive must be refused and leave nothing installed.
         const middle = Math.floor(archive.byteLength / 2);

@@ -18,7 +18,8 @@ name: release
 # - Release (push of tag v<version>; a canary tag v<version>-rc.<n> goes to release-canary.yml instead): builds
 #   nothing. It fetches the archive artifacts of the mint run the committed
 #   pins name, refuses unless every archive is byte for byte the pinned one, and only then does the publish job, the one
-#   job with contents: write, create a draft release with the six archives, SHA256SUMS, install.sh and install.ps1,
+#   job with contents: write, create a draft release with the six archives and
+#   the .tar.xz beside each Linux and macOS .tar.gz, SHA256SUMS, install.sh and install.ps1,
 #   attest every asset's provenance, check the uploaded assets' digests and publish it. It runs only in the public
 #   repository (named erden-sh/erden and not private). Once the published release verifies on every platform, the
 #   packages job writes the Homebrew formula and the Scoop manifest from the pins and pushes them to
@@ -204,6 +205,14 @@ jobs:
                   base=$(node -p "const r = require('./release/node-runtime.json'); r.platforms['${{ matrix.platform }}'].baseUrl ?? r.baseUrl")
                   curl -fsSL --retry 3 -A 'erden-release/1' -o "$RUNNER_TEMP/$file" "$base$file"
                   echo "NODE_ARCHIVE=$RUNNER_TEMP/$file" >> "$GITHUB_ENV"
+            # The tools the build runs besides Node.js: xz for the .tar.xz (Linux, macOS), strip, and codesign on macOS.
+            # Runner images pin none of them; the build record names the xz and strip it used.
+            - name: Check the archive build's tools
+              if: runner.os != 'Windows'
+              shell: bash
+              run: |
+                  xz --version
+                  if [ "$RUNNER_OS" = macOS ]; then command -v strip codesign; else strip --version | head -n 1; fi
             - name: Build the archive twice, compare, and run it
               shell: bash
               run: |
@@ -213,15 +222,20 @@ jobs:
                   node "${builder[@]}" --node "$NODE_ARCHIVE" \
                       --reasoner "engines/reasoner/${{ matrix.target }}/erden-reasoner$exe" \
                       --shacl "engines/shacl/${{ matrix.target }}/erden-shacl$exe" --out release-build
-            # The install script for this archive, offline (--archive), then doctor, init, check and pack on the demo,
-            # and a reasoner changed by one byte refused. On Linux this runs in a container with no network.
-            - name: Install the archive offline and run it
+            # The install script for each archive, offline (--archive), then doctor, init, check and pack on the demo,
+            # and a reasoner changed by one byte refused. On Linux the .tar.gz runs in a container with no network (the
+            # Ubuntu one has no xz); a glibc .tar.xz, which needs xz, runs on the runner, a musl one in its container.
+            - name: Install the archives offline and run them
               shell: bash
               run: |
                   record="release-build/${{ matrix.platform }}.json"
                   file=$(node -p "require('./$record').archive.file")
                   container=""; if [ "$RUNNER_OS" = Linux ]; then container="--container"; fi
                   node release/test-install.mjs --archive "release-build/$file" --record "$record" $container
+                  xz=$(node -p "require('./$record').xzArchive?.file ?? ''")
+                  # A musl .tar.xz installs in its Alpine container, which has xz; a glibc one on the runner.
+                  xzcontainer=""; case "${{ matrix.platform }}" in *-musl) xzcontainer="--container" ;; esac
+                  if [ -n "$xz" ]; then node release/test-install.mjs --archive "release-build/$xz" --record "$record" $xzcontainer; fi
             # Provenance from the run that built the archive; the tag publishes these bytes and attests them again.
             - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
               if: ${{ github.event.repository.private == false }}

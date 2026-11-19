@@ -1,4 +1,4 @@
-// Runs an unpacked CLI archive as a user would: `erden doctor` must report both engines verified against their pins
+// Runs an unpacked CLI archive as a user would: `den help` must print what `erden help` does, `erden doctor` must report both engines verified against their pins
 // (installed platform packages, self-tests passed), `erden init` must create a project, and `erden check` and
 // `erden pack` must pass on a copy of examples/erden-demo. Everything runs with a temporary home, so nothing is
 // written into the archive tree or the user's directories.
@@ -9,7 +9,6 @@ import { join } from 'node:path';
 
 function erden(root, args, home, cwd, name = 'erden') {
     const windows = process.platform === 'win32';
-    const launcher = join(root, 'bin', windows ? `${name}.cmd` : name);
     // DO_NOT_TRACK: a smoke run never sends telemetry.
     const env = {
         ...process.env,
@@ -19,16 +18,27 @@ function erden(root, args, home, cwd, name = 'erden') {
         DO_NOT_TRACK: '1',
     };
     delete env.ERDEN_REASONER_BIN;
-    const child = windows
-        ? spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `""${launcher}" ${args.join(' ')}"`], {
-              cwd,
-              encoding: 'utf8',
-              env,
-              windowsHide: true,
-              // `/s /c` takes off the outer quotes, and the launcher keeps its own; Node's quoting would escape them.
-              windowsVerbatimArguments: true,
-          })
-        : spawnSync(launcher, args, { cwd, encoding: 'utf8', env });
+    // erden is the single executable (erden.exe on Windows); den runs it (den.cmd on Windows, through cmd.exe).
+    const child =
+        windows && name === 'den'
+            ? spawnSync(
+                  process.env.ComSpec ?? 'cmd.exe',
+                  ['/d', '/s', '/c', `""${join(root, 'bin', 'den.cmd')}" ${args.join(' ')}"`],
+                  {
+                      cwd,
+                      encoding: 'utf8',
+                      env,
+                      windowsHide: true,
+                      // `/s /c` takes off the outer quotes, and the launcher keeps its own; Node's quoting would escape them.
+                      windowsVerbatimArguments: true,
+                  },
+              )
+            : spawnSync(join(root, 'bin', windows ? 'erden.exe' : name), args, {
+                  cwd,
+                  encoding: 'utf8',
+                  env,
+                  windowsHide: true,
+              });
     if (child.status !== 0) {
         throw new Error(`erden ${args.join(' ')} failed (${String(child.status)}): ${child.stderr}${child.stdout}`);
     }

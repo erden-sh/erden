@@ -1,17 +1,27 @@
 // Builds one platform's CLI archive twice, each from its own `git archive` export of the commit, and refuses unless
 // the two are byte-identical. Each build installs the export offline from the lockfile, builds the runtime packages,
 // deploys `@erden/cli` with its locked production dependencies (`pnpm deploy --prod`, hoisted, so the tree has no links),
-// drops pnpm's install-time state files, and adds the pinned Node.js runtime, a launcher, both engine binaries at
-// their platform packages' `bin/` paths, LICENSE, NOTICE and THIRD-PARTY-NOTICES/. The Node.js archive and the engine
-// binaries are checked against their pins first. The first build's tree is then run as a user would (smoke.mjs)
-// before it is archived, so a run that wrote into the tree would differ from the second build.
+// drops pnpm's install-time state files, and puts both engine binaries at their platform packages' `bin/` paths. From
+// that deployment it writes the archive tree (lib/sea.mjs): `bin/erden`, the pinned Node.js as a single executable
+// application with the CLI bundled in, `bin/den`, and the `lib/` files the CLI still reads from disk (lib/bundle.mjs),
+// with LICENSE, NOTICE and THIRD-PARTY-NOTICES/ for everything the deployment holds. The Node.js archive and the
+// engine binaries are checked against their pins first. The first build's tree is then run as a user would
+// (smoke.mjs) before it is archived, so a run that wrote into the tree would differ from the second build. Linux and
+// macOS get a .tar.xz beside the .tar.gz; Windows gets a .zip.
 //
 // Usage: node release/build-cli-archive.mjs --node <official archive> --reasoner <binary> --shacl <binary>
 //            --out <directory> [--commit <sha>] [--source-date-epoch <seconds>]
+//        node release/build-cli-archive.mjs --tree <directory> (--node <official archive> | --node-executable <node>)
+//            --reasoner <binary> --shacl <binary> [--commit <sha>]
+//
+// --tree builds the archive tree once, runs it (smoke.mjs) and leaves it in <directory>, unarchived: the distribution
+// test of the archive layout (scripts/test-cli-archive.mjs). Only there may Node.js come from an executable of the
+// pinned version, such as the one running the test, instead of the pinned archive; that tree has no Node.js notice.
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
     chmodSync,
     copyFileSync,
+    cpSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -28,10 +38,11 @@ import { parseArgs } from 'node:util';
 
 import { warnInJobSummary } from '../scripts/lib/ci-warning.mjs';
 
-import { writeArchive } from './lib/archive.mjs';
+import { writeArchives, xzVersion } from './lib/archive.mjs';
 import { normalizeDeployedWorkspace, prepareLockedDeployment } from './lib/deploy.mjs';
 import { copyEngineNotices, writeNpmNotices } from './lib/notices.mjs';
 import { RELEASE_PLATFORMS, archiveName, assertPinned, hostPlatform } from './lib/platforms.mjs';
+import { writeSeaTree } from './lib/sea.mjs';
 import { smokeTest } from './lib/smoke.mjs';
 
 const release = import.meta.dirname;
@@ -113,31 +124,13 @@ function extractNode(nodeArchive, runtime, directory) {
     return { executable: join(top, runtime.executable), license: join(top, 'LICENSE') };
 }
 
-const POSIX_LAUNCHER = `#!/bin/sh
-# Runs the Erden CLI with the Node.js runtime this archive ships. Links to this file are followed to find it.
-set -e
-self=$0
-while [ -L "$self" ]; do
-    link=$(readlink "$self")
-    case $link in
-        /*) self=$link ;;
-        *) self=$(dirname "$self")/$link ;;
-    esac
-done
-root=$(cd "$(dirname "$self")/.." && pwd -P)
-exec "$root/node/node" "$root/lib/dist/bin.js" "$@"
-`;
-
-const WINDOWS_LAUNCHER = `@echo off\r
-rem Runs the Erden CLI with the Node.js runtime this archive ships.\r
-"%~dp0..\\node\\node.exe" "%~dp0..\\lib\\dist\\bin.js" %*\r
-`;
-
 /** One build of the archive tree from an export, at `stage`. */
-function buildStage(source, stage, inputs) {
+async function buildStage(source, stage, inputs) {
     run('pnpm', ['install', '--frozen-lockfile', '--offline', '--ignore-scripts', ...inputs.store], { cwd: source });
     run('pnpm', ['run', 'build:runtime'], { cwd: source });
-    const lib = join(stage, 'lib');
+    // The full deployment, which the bundle is built from and the notices are written from; the archive holds only
+    // its sidecar files.
+    const lib = join(dirname(stage), 'deployed');
     const deployment = prepareLockedDeployment(source);
     // Project the shared lockfile instead of legacy deploy's unlocked resolution. Only this temporary export's
     // injection setting changes; the dependency graph stays fixed. Unused workspace patches do not apply here.
@@ -165,30 +158,31 @@ function buildStage(source, stage, inputs) {
         copyFileSync(engine.binary, destination);
         chmodSync(destination, 0o755);
     }
-    const node = extractNode(inputs.nodeArchive, inputs.nodeRuntime, join(dirname(stage), 'node-runtime'));
-    mkdirSync(join(stage, 'node'));
-    const nodeExecutable = join(stage, 'node', basename(inputs.nodeRuntime.executable));
-    copyFileSync(node.executable, nodeExecutable);
-    chmodSync(nodeExecutable, 0o755);
-    mkdirSync(join(stage, 'bin'));
-    for (const name of ['erden', 'den']) {
-        if (inputs.platform.os === 'win32') {
-            writeFileSync(join(stage, 'bin', `${name}.cmd`), WINDOWS_LAUNCHER);
-        } else {
-            writeFileSync(join(stage, 'bin', name), POSIX_LAUNCHER);
-            chmodSync(join(stage, 'bin', name), 0o755);
-        }
-    }
+    const node =
+        inputs.nodeExecutable === undefined
+            ? extractNode(inputs.nodeArchive, inputs.nodeRuntime, join(dirname(stage), 'node-runtime'))
+            : { executable: inputs.nodeExecutable, license: undefined };
+    const sea = await writeSeaTree({
+        deployed: lib,
+        node: node.executable,
+        os: inputs.platform.os,
+        enginePackages: inputs.engines.map((engine) => engine.packageName),
+        stage,
+        work: join(dirname(stage), 'sea'),
+    });
     copyFileSync(join(source, 'LICENSE'), join(stage, 'LICENSE'));
     copyFileSync(join(source, 'NOTICE'), join(stage, 'NOTICE'));
     const notices = join(stage, 'THIRD-PARTY-NOTICES');
     const policy = JSON.parse(readFileSync(join(source, 'release/license-policy.json'), 'utf8'));
+    // Every package of the deployment: the bundle holds the code of each, and the sidecar some files of each.
     const packages = writeNpmNotices(nodeModules, notices, policy);
-    mkdirSync(join(notices, 'node.js'));
-    copyFileSync(node.license, join(notices, 'node.js', 'LICENSE'));
+    if (node.license !== undefined) {
+        mkdirSync(join(notices, 'node.js'));
+        copyFileSync(node.license, join(notices, 'node.js', 'LICENSE'));
+    }
     copyEngineNotices(join(source, 'reasoner/qualification'), notices, 'erden-reasoner');
     copyEngineNotices(join(source, 'shacl/qualification'), notices, 'erden-shacl');
-    return { packages, dependencyLockDigest: deployment.digest };
+    return { packages, dependencyLockDigest: deployment.digest, sea };
 }
 
 /** The engine pins of the exported tree for a platform; refuses a platform an engine has no pins for. */
@@ -214,14 +208,23 @@ async function main() {
             reasoner: { type: 'string' },
             shacl: { type: 'string' },
             out: { type: 'string' },
+            tree: { type: 'string' },
+            'node-executable': { type: 'string' },
             commit: { type: 'string', default: 'HEAD' },
             'source-date-epoch': { type: 'string' },
         },
     });
-    for (const name of ['node', 'reasoner', 'shacl', 'out']) {
+    const tree = values.tree === undefined ? undefined : resolve(values.tree);
+    for (const name of ['reasoner', 'shacl', ...(tree === undefined ? ['node', 'out'] : [])]) {
         if (values[name] === undefined) {
             throw new Error(`--${name} is required`);
         }
+    }
+    if (tree !== undefined && (values.node === undefined) === (values['node-executable'] === undefined)) {
+        throw new Error('--tree needs one of --node and --node-executable');
+    }
+    if (tree === undefined && values['node-executable'] !== undefined) {
+        throw new Error('--node-executable is only for --tree; an archive ships the pinned Node.js archive');
     }
     const platformName = hostPlatform();
     if (platformName === undefined) {
@@ -238,10 +241,21 @@ async function main() {
     const version = JSON.parse(git('show', `${commit}:apps/cli/package.json`)).version;
     const nodeRuntimes = JSON.parse(git('show', `${commit}:release/node-runtime.json`));
     const nodeRuntime = nodeRuntimes.platforms[platformName];
-    assertPinned(values.node, nodeRuntime, `Node.js ${nodeRuntimes.version} for ${platformName}`);
-    const out = resolve(values.out);
-    mkdirSync(out, { recursive: true });
+    const nodeExecutable = values['node-executable'] === undefined ? undefined : resolve(values['node-executable']);
+    if (nodeExecutable === undefined) {
+        assertPinned(values.node, nodeRuntime, `Node.js ${nodeRuntimes.version} for ${platformName}`);
+    } else {
+        const reported = execFileSync(nodeExecutable, ['--version'], { encoding: 'utf8' }).trim();
+        if (reported !== `v${nodeRuntimes.version}`) {
+            throw new Error(`${nodeExecutable} is Node.js ${reported}, not the pinned ${nodeRuntimes.version}`);
+        }
+    }
+    const out = tree === undefined ? resolve(values.out) : undefined;
+    if (out !== undefined) {
+        mkdirSync(out, { recursive: true });
+    }
     const name = archiveName(version, platformName);
+    const names = platform.xz ? [name, archiveName(version, platformName, 'tar.xz')] : [name];
     const prefix = name.replace(/\.(?:tar\.gz|zip)$/u, '');
     const store = workspaceStoreArguments();
     // The native real path expands a Windows 8.3 short name, so the smoke run's tree has no aliased parent.
@@ -250,7 +264,7 @@ async function main() {
         const runs = [];
         let smoke;
         let pins;
-        for (const label of ['a', 'b']) {
+        for (const label of tree === undefined ? ['a', 'b'] : ['a']) {
             const source = join(temporary, label, 'source');
             exportSource(commit, source);
             pins ??= await enginePins(source, platform);
@@ -262,9 +276,10 @@ async function main() {
                 assertPinned(engine.binary, engine.pin, engine.packageName);
             }
             const stage = join(temporary, label, prefix);
-            const { packages, dependencyLockDigest } = buildStage(source, stage, {
+            const { packages, dependencyLockDigest, sea } = await buildStage(source, stage, {
                 engines,
-                nodeArchive: resolve(values.node),
+                nodeArchive: values.node === undefined ? undefined : resolve(values.node),
+                nodeExecutable,
                 nodeRuntime,
                 platform,
                 store,
@@ -272,43 +287,71 @@ async function main() {
             if (label === 'a') {
                 smoke = smokeTest(stage, join(source, 'examples/erden-demo'));
             }
-            const archive = join(temporary, label, name);
-            runs.push({ label, packages, dependencyLockDigest, ...writeArchive(stage, prefix, archive, epoch) });
+            if (tree !== undefined) {
+                rmSync(tree, { recursive: true, force: true });
+                cpSync(stage, tree, { recursive: true });
+                process.stdout.write(`${JSON.stringify({ tree, smoke, singleExecutable: sea })}\n`);
+                return;
+            }
+            const archives = writeArchives(
+                stage,
+                prefix,
+                names.map((file) => join(temporary, label, file)),
+                epoch,
+            ).map((archive, index) => ({ file: names[index], ...archive }));
+            runs.push({ label, packages, dependencyLockDigest, sea, archives });
         }
-        const reproducible = runs[0].sha256 === runs[1].sha256 && runs[0].bytes === runs[1].bytes;
+        const reproducible = runs[0].archives.every(
+            (archive, index) =>
+                archive.sha256 === runs[1].archives[index].sha256 && archive.bytes === runs[1].archives[index].bytes,
+        );
         // On Linux a difference fails the build. On Windows and macOS, whose runner images no pin covers, it is a
         // warning and the first build is kept: the pins name its bytes, and the tag publishes exactly those.
+        function digests(build) {
+            return build.archives.map((archive) => archive.sha256).join(', ');
+        }
         if (!reproducible && process.platform === 'linux') {
-            throw new Error(`${name} is not reproducible: ${runs[0].sha256} vs ${runs[1].sha256}`);
+            throw new Error(`${name} is not reproducible: ${digests(runs[0])} vs ${digests(runs[1])}`);
         }
         if (!reproducible) {
             warnInJobSummary(
-                `${name}: the two builds differ (${runs[0].sha256} vs ${runs[1].sha256}); the first is kept`,
+                `${name}: the two builds differ (${digests(runs[0])} vs ${digests(runs[1])}); the first is kept`,
             );
         }
-        copyFileSync(join(temporary, 'a', name), join(out, name));
+        for (const file of names) {
+            copyFileSync(join(temporary, 'a', file), join(out, file));
+        }
+        const [primary, xz] = runs[0].archives;
         const record = {
             schema: 'erden.cli-archive-build/v1',
             version,
             platform: platformName,
             sourceCommit: commit,
             sourceDateEpoch: epoch,
-            archive: { file: name, bytes: runs[0].bytes, sha256: runs[0].sha256 },
-            node: { version: nodeRuntimes.version, file: nodeRuntime.file, sha256: nodeRuntime.sha256 },
+            archive: primary,
+            ...(xz === undefined ? {} : { xzArchive: { ...xz, xz: xzVersion() } }),
+            node: {
+                version: nodeRuntimes.version,
+                file: nodeRuntime.file,
+                sha256: nodeRuntime.sha256,
+            },
+            singleExecutable: runs[0].sea,
             dependencyLockDigest: runs[0].dependencyLockDigest,
             engines: {
                 reasoner: { packageName: pins.reasoner.packageName, sha256: pins.reasoner.sha256 },
                 shacl: { packageName: pins.shacl.packageName, sha256: pins.shacl.sha256 },
             },
             npmPackages: runs[0].packages,
-            runs: runs.map(({ label, bytes, sha256 }) => ({ label, bytes, sha256 })),
+            runs: runs.map(({ label, archives }) => ({ label, archives })),
             smoke,
             result: reproducible ? 'byte-identical' : 'native-builds-differ',
         };
         writeFileSync(join(out, `${platformName}.json`), `${JSON.stringify(record, null, 2)}\n`);
-        process.stdout.write(
-            `${name}: ${runs[0].sha256} (${String(runs[0].bytes)} bytes); ${reproducible ? 'both builds match' : 'the first build kept'}\n`,
-        );
+        for (const archive of runs[0].archives) {
+            process.stdout.write(
+                `${archive.file}: ${archive.sha256} (${String(archive.bytes)} bytes); ${reproducible ? 'both builds match' : 'the first build kept'}\n`,
+            );
+        }
     } finally {
         if (existsSync(temporary)) {
             rmSync(temporary, { recursive: true, force: true, maxRetries: 5 });

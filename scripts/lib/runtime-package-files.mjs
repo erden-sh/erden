@@ -15,6 +15,7 @@ export const RUNTIME_DIST_FILES = new Map([
             ...emittedPair('main'),
             ...emittedPair('query'),
             ...emittedPair('registry'),
+            ...emittedPair('sea'),
             ...emittedPair('session'),
             ...emittedPair('telemetry'),
             ...emittedPair('updates'),

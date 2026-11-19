@@ -333,6 +333,48 @@ describe('release Worker', () => {
         expect((await tokened.request('/install')).status).toBe(302);
     });
 
+    it('redirects and counts the .tar.xz archives of a release that has them, as the same archive', async () => {
+        const withXz = {
+            tag_name: 'v0.2.0',
+            draft: false,
+            prerelease: false,
+            published_at: '2026-11-19T06:00:00Z',
+            assets: [
+                ...assets('0.2.0'),
+                ...['darwin-arm64', 'linux-arm64', 'linux-x64'].map((platform) => ({
+                    name: `erden-0.2.0-${platform}.tar.xz`,
+                })),
+            ],
+        };
+        const h = harness([withXz, STABLE]);
+        const alias = await h.request('/download/stable/erden-linux-x64.tar.xz', {
+            headers: { 'user-agent': 'erden-install/1' },
+        });
+        expect(alias.headers.get('location')).toBe(
+            'https://github.com/erden-sh/erden/releases/download/v0.2.0/erden-0.2.0-linux-x64.tar.xz',
+        );
+        const gz = await h.request('/download/stable/erden-linux-x64.tar.gz', {
+            headers: { 'user-agent': 'erden-install/1' },
+        });
+        expect(gz.headers.get('location')).toBe(
+            'https://github.com/erden-sh/erden/releases/download/v0.2.0/erden-0.2.0-linux-x64.tar.gz',
+        );
+        await Promise.all(h.pending);
+        expect(h.env.DB.rows('SELECT asset, os, arch, client, hits FROM downloads')).toEqual([
+            { asset: 'archive', os: 'linux', arch: 'x64', client: 'script', hits: 2 },
+        ]);
+        // Windows ships only a .zip; and a channel release without a .tar.xz has none to redirect to.
+        expect((await h.request('/download/stable/erden-win32-x64.tar.xz')).status).toBe(404);
+        expect((await harness([STABLE]).request('/download/stable/erden-linux-x64.tar.xz')).status).toBe(404);
+        expect(parseAsset('erden-0.2.0-darwin-arm64.tar.xz', '0.2.0')).toEqual({
+            file: 'erden-0.2.0-darwin-arm64.tar.xz',
+            asset: 'archive',
+            os: 'darwin',
+            arch: 'arm64',
+        });
+        expect(parseAsset('erden-0.2.0-win32-x64.tar.xz', '0.2.0')).toBeNull();
+    });
+
     it('orders versions with a release above its own release candidates', () => {
         expect(compareVersions('0.2.0', '0.2.0-rc.10')).toBeGreaterThan(0);
         expect(compareVersions('0.2.0-rc.10', '0.2.0-rc.2')).toBeGreaterThan(0);
