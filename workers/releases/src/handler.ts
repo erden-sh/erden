@@ -9,7 +9,9 @@
 //                                           the same for stable or canary
 //   /download/<ref>/<file>                 a release asset. <ref> is stable, canary or a tag (v0.1.0, v0.2.0-rc.1).
 //                                           <file> is install.sh, install.ps1, SHA256SUMS, erden-<platform>.<ext> (the
-//                                           ref's version) or the exact erden-<version>-<platform>.<ext>
+//                                           ref's version) or the exact erden-<version>-<platform>.<ext>; <ext> is
+//                                           tar.xz or tar.gz on Linux and macOS (counted alike, as the archive) and zip
+//                                           on Windows
 //   /updates/<channel>/<os>/<arch>/<version>
 //                                           the channel's latest release, for a CLI with telemetry on; counted
 //   /updates/<channel>                      the same answer, never counted: for a CLI with telemetry off
@@ -54,11 +56,12 @@ const USER_AGENT = 'erden-releases-worker/1';
 
 export const CHANNELS = Object.freeze(['stable', 'canary'] as const);
 export type Channel = (typeof CHANNELS)[number];
+/** Each platform's archive formats: Linux and macOS ship the same tree as .tar.xz and .tar.gz, Windows as .zip. */
 export const PLATFORMS = Object.freeze({
-    'linux-x64': { os: 'linux', arch: 'x64', extension: 'tar.gz' },
-    'linux-arm64': { os: 'linux', arch: 'arm64', extension: 'tar.gz' },
-    'darwin-arm64': { os: 'darwin', arch: 'arm64', extension: 'tar.gz' },
-    'win32-x64': { os: 'win32', arch: 'x64', extension: 'zip' },
+    'linux-x64': { os: 'linux', arch: 'x64', extensions: ['tar.xz', 'tar.gz'] },
+    'linux-arm64': { os: 'linux', arch: 'arm64', extensions: ['tar.xz', 'tar.gz'] },
+    'darwin-arm64': { os: 'darwin', arch: 'arm64', extensions: ['tar.xz', 'tar.gz'] },
+    'win32-x64': { os: 'win32', arch: 'x64', extensions: ['zip'] },
 } as const);
 type Platform = keyof typeof PLATFORMS;
 const OPERATING_SYSTEMS = Object.freeze(['linux', 'darwin', 'win32']);
@@ -69,7 +72,7 @@ const VERSION = new RegExp(`^${VERSION_TEXT}$`, 'u');
 const STABLE_TAG = new RegExp(`^v${NUMBER}\\.${NUMBER}\\.${NUMBER}$`, 'u');
 const CANARY_TAG = new RegExp(`^v${NUMBER}\\.${NUMBER}\\.${NUMBER}-rc\\.${NUMBER}$`, 'u');
 const ARCHIVE = new RegExp(
-    `^erden-(?:(${VERSION_TEXT})-)?(linux-x64|linux-arm64|darwin-arm64|win32-x64)\\.(tar\\.gz|zip)$`,
+    `^erden-(?:(${VERSION_TEXT})-)?(linux-x64|linux-arm64|darwin-arm64|win32-x64)\\.(tar\\.xz|tar\\.gz|zip)$`,
     'u',
 );
 const CLI_USER_AGENT = new RegExp(`^erden/${VERSION_TEXT} \\((linux|darwin|win32); (x64|arm64)\\)$`, 'u');
@@ -302,11 +305,16 @@ export function parseAsset(
     }
     const named = match[1];
     const platform = PLATFORMS[match[2] as Platform];
-    if ((named !== undefined && named !== version) || platform.extension !== match[3]) {
+    const extension = match[3] as string;
+    if (
+        (named !== undefined && named !== version) ||
+        !(platform.extensions as ReadonlyArray<string>).includes(extension)
+    ) {
         return null;
     }
+    // Either format of an archive counts as the archive, so a platform's downloads add up whichever one was fetched.
     return {
-        file: `erden-${version}-${match[2] as string}.${platform.extension}`,
+        file: `erden-${version}-${match[2] as string}.${extension}`,
         asset: 'archive',
         os: platform.os,
         arch: platform.arch,
