@@ -16,12 +16,12 @@
   "target": "x86_64-unknown-linux-musl",
   "binary": {
     "path": "bin/erden-reasoner",
-    "bytes": null,
-    "sha256": null
+    "bytes": 2081424,
+    "sha256": "sha256:0006304c007ee1d6f0b28022d7a38d7ebcc792def1b52f934d33b6f822c5163a"
   },
   "knownAnswer": {
     "fixture": "subclass-type",
-    "responseBytes": null,
-    "responseSha256": null
+    "responseBytes": 2299,
+    "responseSha256": "sha256:0dc93de94bb0a5d18cee85cc02064f040a4b89689994e98d2cd71f8c1ed2e1f6"
   }
 }

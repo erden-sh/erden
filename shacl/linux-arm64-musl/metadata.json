@@ -15,12 +15,12 @@
   "target": "aarch64-unknown-linux-musl",
   "binary": {
     "path": "bin/erden-shacl",
-    "bytes": null,
-    "sha256": null
+    "bytes": 9507736,
+    "sha256": "sha256:592dc6a3d8c5b08000159d773a1fccfe7e4756b96250115f1d5e3c05df792d6e"
   },
   "knownAnswer": {
     "fixture": "core-and-sparql",
-    "responseBytes": null,
-    "responseSha256": null
+    "responseBytes": 2202,
+    "responseSha256": "sha256:4b62ca762ab86656290649db7d792426ee1188abbdf2a4a4a55e90f1f2b27c30"
   }
 }
