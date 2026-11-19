@@ -233,7 +233,7 @@ function main(values) {
 }
 
 const { values } = parseArgs({ options: { tag: { type: 'string' } } });
-if (values.tag === undefined || !/^v\d+\.\d+\.\d+$/u.test(values.tag)) {
+if (values.tag === undefined || !/^v\d+\.\d+\.\d+(?:-rc\.\d+)?$/u.test(values.tag)) {
     throw new Error('Usage: verify-published.mjs --tag v<version>');
 }
 await main(values);

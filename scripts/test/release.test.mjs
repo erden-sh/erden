@@ -377,7 +377,8 @@ test('the release workflow pins every action, and only its publish job and the j
     const workflow = YAML.parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
     assert.deepEqual(workflow.permissions, { contents: 'read' });
     assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch']);
-    assert.deepEqual(workflow.on.push.tags, ['v*']);
+    // A release candidate tag is a canary: release-canary.yml publishes it, never this workflow.
+    assert.deepEqual(workflow.on.push.tags, ['v*', '!v*-rc.*']);
     for (const [name, job] of Object.entries(workflow.jobs)) {
         if (name === 'publish') {
             // actions: read fetches the mint run's archive artifacts.
@@ -414,5 +415,52 @@ test('the release workflow pins every action, and only its publish job and the j
     for (const engine of ['reasoner-build.yml', 'shacl-build.yml']) {
         const called = YAML.parse(readFileSync(join(root, '.github/workflows', engine), 'utf8'));
         assert.equal(called.on.workflow_call.inputs.commit.type, 'string', engine);
+    }
+});
+
+test('a canary tag publishes the pinned mint archives as a prerelease that is never the latest release', () => {
+    const workflow = YAML.parse(readFileSync(join(root, '.github/workflows/release-canary.yml'), 'utf8'));
+    const stable = YAML.parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
+    assert.deepEqual(workflow.permissions, { contents: 'read' });
+    assert.deepEqual(Object.keys(workflow.on), ['push']);
+    assert.deepEqual(workflow.on.push.tags, ['v*-rc.*']);
+    assert.deepEqual(Object.keys(workflow.jobs).sort(), ['publish', 'published-archives', 'verify']);
+    // The canary's fetch-and-check steps are the stable release's, step for step, after its tag check.
+    for (const name of ['published-archives', 'publish']) {
+        const steps = workflow.jobs[name].steps;
+        const download = steps.findIndex((step) => step.uses?.startsWith('actions/download-artifact@'));
+        assert.notEqual(download, -1, name);
+        assert.equal(steps[download].with.pattern, 'archive-*', name);
+        assert.ok(steps[download].with['run-id'] !== undefined, name);
+        const verify = steps.findIndex((step) =>
+            step.run?.includes('release/pins.mjs verify --artifacts release-build --release --tag'),
+        );
+        assert.ok(verify > download, `${name} checks the fetched archives against the pins`);
+        assert.ok(!steps.some((step) => step.run?.includes('build-cli-archive.mjs')), `${name} builds no archive`);
+        const stableSteps = stable.jobs[name].steps.filter((step) => step.uses !== undefined).map((step) => step.uses);
+        const canarySteps = steps.filter((step) => step.uses !== undefined).map((step) => step.uses);
+        assert.deepEqual(canarySteps, stableSteps, `${name} pins the same actions as the stable release`);
+    }
+    assert.match(workflow.jobs['published-archives'].steps[0].run, /\^v\[0-9\]\+/u);
+    const publish = workflow.jobs.publish;
+    assert.deepEqual(publish.permissions, { contents: 'write', actions: 'read' });
+    assert.deepEqual(workflow.jobs['published-archives'].permissions, { contents: 'read', actions: 'read' });
+    const publishes = evaluateGuard.bind(undefined, publish.if);
+    const tag = { event_name: 'push', repository: 'erden-sh/erden', event: { repository: { private: false } } };
+    assert.equal(publishes(tag), true);
+    assert.equal(publishes({ ...tag, event: { repository: { private: true } } }), false, 'the private repository');
+    assert.equal(publishes({ ...tag, repository: 'someone/erden' }), false, 'a fork');
+    const create = publish.steps.find((step) => step.run?.includes('gh release create'));
+    assert.match(create.run, /gh release create "\$GITHUB_REF_NAME" --draft --prerelease --latest=false --verify-tag/u);
+    assert.match(create.run, /gh release edit "\$GITHUB_REF_NAME" --draft=false --prerelease --latest=false/u);
+    const verifyAt = publish.steps.findIndex((step) => step.run?.includes('release/pins.mjs verify'));
+    assert.ok(verifyAt < publish.steps.indexOf(create), 'the pins are checked before anything is published');
+    assert.equal(workflow.jobs.verify.uses, './.github/workflows/verify-release.yml');
+    for (const job of Object.values(workflow.jobs)) {
+        for (const step of job.steps ?? []) {
+            if (step.uses !== undefined) {
+                assert.match(step.uses, /^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/u, step.uses);
+            }
+        }
     }
 });
