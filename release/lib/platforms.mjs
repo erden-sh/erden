@@ -1,5 +1,6 @@
-// The four release platforms, how each names itself to the engines' resolvers and runners, and the pin check every
-// input to an archive passes first.
+// The six release platforms, how each names itself to the engines' resolvers and runners, and the pin check every
+// input to an archive passes first. The two musl platforms (Alpine and other musl distributions) build in the pinned
+// Node.js Alpine image on the glibc runner of their architecture; `libc` tells them apart from the glibc ones.
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 
@@ -20,11 +21,29 @@ export const RELEASE_PLATFORMS = Object.freeze({
         runner: 'ubuntu-24.04-arm',
         archive: 'tar.gz',
     }),
+    'linux-arm64-musl': Object.freeze({
+        os: 'linux',
+        cpu: 'arm64',
+        libc: 'musl',
+        engineKey: 'linux:arm64:musl',
+        target: 'aarch64-unknown-linux-musl',
+        runner: 'ubuntu-24.04-arm',
+        archive: 'tar.gz',
+    }),
     'linux-x64': Object.freeze({
         os: 'linux',
         cpu: 'x64',
         engineKey: 'linux:x64:glibc',
         target: 'x86_64-unknown-linux-gnu',
+        runner: 'ubuntu-24.04',
+        archive: 'tar.gz',
+    }),
+    'linux-x64-musl': Object.freeze({
+        os: 'linux',
+        cpu: 'x64',
+        libc: 'musl',
+        engineKey: 'linux:x64:musl',
+        target: 'x86_64-unknown-linux-musl',
         runner: 'ubuntu-24.04',
         archive: 'tar.gz',
     }),
@@ -38,10 +57,27 @@ export const RELEASE_PLATFORMS = Object.freeze({
     }),
 });
 
+/** The C library of this Linux host as the release platforms name it: 'musl', or undefined for glibc and others. */
+export function hostLibc() {
+    if (process.platform !== 'linux') {
+        return undefined;
+    }
+    const report = process.report.getReport();
+    if (typeof report.header?.glibcVersionRuntime === 'string') {
+        return undefined;
+    }
+    return report.sharedObjects?.some((path) => /(?:^|\/)(?:ld-musl-|libc\.musl-)[^/]*$/u.test(path))
+        ? 'musl'
+        : undefined;
+}
+
 /** The release platform of this host, or undefined. */
-export function hostPlatform(host = { platform: process.platform, arch: process.arch }) {
+export function hostPlatform(host = { platform: process.platform, arch: process.arch, libc: hostLibc() }) {
     return Object.keys(RELEASE_PLATFORMS).find(
-        (name) => RELEASE_PLATFORMS[name].os === host.platform && RELEASE_PLATFORMS[name].cpu === host.arch,
+        (name) =>
+            RELEASE_PLATFORMS[name].os === host.platform &&
+            RELEASE_PLATFORMS[name].cpu === host.arch &&
+            RELEASE_PLATFORMS[name].libc === host.libc,
     );
 }
 

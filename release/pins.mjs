@@ -5,13 +5,13 @@
 //   node release/pins.mjs mint --artifacts <dir> --out <dir> --run-id <id> [--allow-partial]
 //       Reads each platform's build record (<platform>.json, from build-cli-archive.mjs) and its archive from
 //       <dir>, and writes release/pins/<version>.json under --out, for a pull request, naming the mint run (the run
-//       whose archive artifacts the tag publishes). Refuses unless all four platforms are present, the records agree
+//       whose archive artifacts the tag publishes). Refuses unless all six platforms are present, the records agree
 //       on version, commit and epoch, and each archive is the one its record names. --allow-partial accepts fewer
 //       platforms, for a local rehearsal; `verify --release` refuses such pins.
 //   node release/pins.mjs verify --artifacts <dir> [--release] [--tag v<version>]
 //       Refuses unless every archive in <dir> is byte for byte the one release/pins/<version>.json in this checkout
 //       pins, every pinned platform is present, and each record's engines are the pinned ones. --release also
-//       requires all four platforms and, with --tag, that the tag names the pinned version.
+//       requires all six platforms and, with --tag, that the tag names the pinned version.
 //   node release/pins.mjs mint-run --version <version>
 //       Prints the mint run whose archive artifacts the tag publishes.
 import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -98,7 +98,7 @@ export function pinsOf(records, { allowPartial = false, mintRunId } = {}) {
 export function pinDifferences(pins, records, { release: releaseMode = false } = {}) {
     const differences = [];
     if (releaseMode && pins.complete !== true) {
-        differences.push('the pins were minted for fewer than four platforms');
+        differences.push('the pins were minted for fewer than every release platform');
     }
     if (releaseMode && !Number.isSafeInteger(pins.mintRunId)) {
         differences.push('the pins name no mint run to publish the archives of');
