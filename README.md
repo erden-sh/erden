@@ -26,32 +26,113 @@ source.
 
 ## Installing
 
-Each release has one archive per platform: Linux x64 and arm64 (glibc), macOS arm64 and Windows x64. An archive
-holds the `erden` CLI, the Node.js runtime it runs on, and both engines. Each release also has `install.sh`,
-`install.ps1` and `SHA256SUMS`. An install script carries its release's archive digests and refuses any other
-file. The tool uses the hosted registry at `https://registry.erden.sh` unless `--registry` or a project's manifest names
-another. It installs for the current user, with no administrator rights, to `~/.local/share/erden/<version>/` with
-`erden` and `den` linked into `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\Erden\<version>\`).
+Linux (x64 and arm64, glibc or musl) and macOS on Apple silicon:
 
 ```bash
 curl -fsSL https://erden.sh/install | sh
 ```
 
-On Windows, in PowerShell:
+Windows x64, in PowerShell:
 
 ```powershell
 irm https://erden.sh/install.ps1 | iex
 ```
 
-`https://erden.sh/install` and `https://erden.sh/install.ps1` redirect to the latest stable release's `install.sh` and
-`install.ps1` on GitHub; you can also download them from the [releases page](https://github.com/erden-sh/erden/releases)
-and run `sh install.sh` or `powershell -ExecutionPolicy Bypass -File install.ps1`.
+Or with a package manager:
+
+```bash
+brew install erden-sh/tap/erden                      # macOS arm64, Linux x64 and arm64
+scoop bucket add erden https://github.com/erden-sh/scoop-bucket
+scoop install erden                                  # Windows x64
+```
+
+Each release has one archive per platform: Linux x64 and arm64 for glibc and for musl (Alpine), macOS arm64 and
+Windows x64. An archive holds the `erden` CLI, the Node.js runtime it runs on, and both engines. Each release also has
+`install.sh`, `install.ps1` and `SHA256SUMS`. `https://erden.sh/install` and `https://erden.sh/install.ps1` redirect to
+the latest stable release's `install.sh` and `install.ps1` on GitHub; you can also download them from the
+[releases page](https://github.com/erden-sh/erden/releases) and run `sh install.sh` or
+`powershell -ExecutionPolicy Bypass -File install.ps1`. An install script carries its release's archive digests and
+refuses any other file. The tool uses the hosted registry at `https://registry.erden.sh` unless `--registry` or a
+project's manifest names another.
+
+The scripts install for the current user, with no administrator rights:
+
+- `install.sh` puts the release in `~/.local/share/erden/<version>/` and links `erden` and `den` into `~/.local/bin`.
+  Unless that directory is already on your `PATH`, it adds one line to `~/.profile`, to the bash files you have
+  (`~/.bashrc`, `~/.bash_profile`, `~/.bash_login`), to `~/.zshenv` when you use zsh, and a file in
+  `~/.config/fish/conf.d/` when you use fish. Each line sources `~/.local/share/erden/env`, which adds the directory
+  once. It prints the line to run to use `erden` in the current shell. Running the script again adds nothing twice.
+- `install.ps1` puts the release in `%LOCALAPPDATA%\Programs\Erden\<version>\` and launchers for `erden` and `den` in
+  `%LOCALAPPDATA%\Programs\Erden\bin\`, which it adds to your user `PATH` in the registry once. New terminals find it;
+  the current session is updated too.
+- On Alpine and other musl systems, Erden needs the C++ runtime Node.js uses: `apk add libstdc++ libgcc`. The script
+  checks for it and names that command before it downloads anything.
+
+Options, for either script:
+
+| `install.sh`          | `install.ps1`     | Environment variable     | Effect                                         |
+| --------------------- | ----------------- | ------------------------ | ---------------------------------------------- |
+| `--version <version>` | `-Version <v>`    | `ERDEN_VERSION`          | install that release instead of the latest     |
+| `--no-modify-path`    | `-NoModifyPath`   | `ERDEN_NO_MODIFY_PATH=1` | leave your shell profiles or user `PATH` alone |
+| `--archive <file>`    | `-Archive <file>` |                          | install a downloaded archive, offline          |
+| `--uninstall`         | `-Uninstall`      |                          | remove Erden and the `PATH` changes            |
+
+Pass `install.sh` options after `sh -s --`, and set the environment variables for the `irm | iex` form:
+
+```bash
+curl -fsSL https://erden.sh/install | sh -s -- --version 0.1.0 --no-modify-path
+```
+
+```powershell
+$env:ERDEN_VERSION = '0.1.0'; irm https://erden.sh/install.ps1 | iex
+```
+
+A script checks its own release's archives against the digests it carries. For another version it checks the
+archive against that release's `SHA256SUMS`, fetched over HTTPS from the same release.
 
 `erden upgrade` updates an install made this way to the latest release: it checks the new release's install script and
 archive against its `SHA256SUMS` and then runs that script. An install made by Homebrew or Scoop is updated by them
 instead. Canary releases (`v<x.y.z>-rc.<n>`, GitHub prereleases) are for trying what comes next: install one with
 `curl -fsSL https://erden.sh/install/canary | sh` (Windows: `irm https://erden.sh/install/canary.ps1 | iex`), or move
 an install to that channel with `erden upgrade --channel canary`, and back with `erden upgrade --channel stable`.
+
+### Shell completions
+
+`erden completions <bash|zsh|fish|powershell>` writes a completion script for `erden` and `den`. Homebrew installs them
+for you. Otherwise, add one of these to your shell's startup file:
+
+```bash
+source <(erden completions bash)                                # ~/.bashrc
+source <(erden completions zsh)                                 # ~/.zshrc, after compinit
+erden completions fish | source                                 # ~/.config/fish/config.fish
+erden completions powershell | Out-String | Invoke-Expression   # $PROFILE
+```
+
+### Uninstalling
+
+```bash
+curl -fsSL https://erden.sh/install | sh -s -- --uninstall
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://erden.sh/install.ps1))) -Uninstall
+```
+
+This removes the installed versions, the `erden` and `den` links or launchers, and the `PATH` lines or entry the
+script added. Your projects, Erden's package store (`~/.local/share/erden/store`, or `%LOCALAPPDATA%\Erden\store`)
+and saved registry sign-ins (`erden logout` removes them) are left as they were. Installed with Homebrew or Scoop,
+run `brew uninstall erden` or `scoop uninstall erden` instead.
+
+### Checking where a release came from
+
+Each archive and every other release asset has a build provenance attestation, signed by the GitHub Actions run that
+built it. With the [GitHub CLI](https://cli.github.com):
+
+```bash
+gh attestation verify erden-<version>-<platform>.tar.gz --repo erden-sh/erden
+```
+
+Erden 0.1.0 has no attestations; check its assets against `SHA256SUMS`.
 
 ### Telemetry
 
@@ -101,17 +182,22 @@ CLI install, and every test.
 
 `.github/workflows/release.yml` runs three ways:
 
-1. **Engine mint** (dispatched): builds both engines twice on Linux x64, Linux arm64, macOS arm64 and Windows x64, checks
-   that every platform gives the same answers, and uploads their pins for a pull request. The Linux builds must be
-   byte-identical. A difference between the two macOS or Windows builds, or in their answers, is a warning in the job
+1. **Engine mint** (dispatched): builds both engines twice for Linux x64 and arm64 (glibc and musl), macOS arm64 and
+   Windows x64, checks that every platform gives the same answers, and uploads their pins for a pull request. The Linux
+   builds must be byte-identical. A difference between the two macOS or Windows builds, or in their answers, is a warning in the job
    summary, since those builds use the runner image's linker, which no pin covers. The Windows engines link the C
    runtime statically, so they need no Visual C++ Redistributable.
 2. **Archive mint** (dispatched after the engine pins are merged): builds no engine. It builds each platform's CLI
    archive twice with the exact pinned engine binaries, fetched from the engine mint run, and uploads
-   `release/pins/<version>.json`, naming this run, for a pull request.
+   `release/pins/<version>.json`, naming this run, for a pull request. The musl archives build in a pinned Node.js
+   Alpine image. Each archive gets a build provenance attestation.
 3. **Release** (a `v<version>` tag on the merged pins): builds nothing. It fetches the archives of the mint run the
    pins name, refuses unless each one's size and SHA-256 are the pinned ones, and publishes them with `SHA256SUMS` and
-   the install scripts, which check every archive's digest before they extract it.
+   the install scripts, which check every archive's digest before they extract it, attesting every asset. Once the
+   published release installs and runs on every platform, the workflow writes the Homebrew formula and the Scoop
+   manifest from the pins (`release/write-package-manifests.mjs`) and pushes them to
+   [erden-sh/homebrew-tap](https://github.com/erden-sh/homebrew-tap) and
+   [erden-sh/scoop-bucket](https://github.com/erden-sh/scoop-bucket).
 
 A canary is made the same way with the version `x.y.z-rc.n` and the tag `vx.y.z-rc.n`, which
 `.github/workflows/release-canary.yml` publishes as a GitHub prerelease that is never marked latest.
