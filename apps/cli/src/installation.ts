@@ -2,6 +2,7 @@
 // where it keeps its per-user state. Telemetry, the update notice and `erden upgrade` all start from here.
 import { readFileSync } from 'node:fs';
 import { posix, win32 } from 'node:path';
+import { isSea } from 'node:sea';
 import { fileURLToPath } from 'node:url';
 
 export type ReleaseChannel = 'stable' | 'canary';
@@ -19,15 +20,23 @@ export type InstallMethod = 'script' | 'homebrew' | 'scoop' | 'archive' | 'sourc
 
 export interface Installation {
     readonly method: InstallMethod;
-    /** The archive's root directory (holding bin/, lib/ and node/); absent for `source`. */
+    /** The archive's root directory (holding bin/ and lib/); absent for `source`. */
     readonly root?: string;
 }
 
 export interface InstallationProbe {
-    /** This module's file: `<root>/lib/dist/installation.js` in a release archive. */
+    /**
+     * This module's file: `<root>/lib/dist/installation.js` in a release archive (in its single executable, the path
+     * the bundle gives this module).
+     */
     readonly modulePath: string;
-    /** The Node.js executable running the CLI: `<root>/node/node` in a release archive. */
+    /**
+     * The executable running the CLI: in a release archive its single executable, `<root>/bin/erden` (`erden.exe` on
+     * Windows), or in an archive from before the single executable, its Node.js, `<root>/node/node`.
+     */
     readonly execPath: string;
+    /** Whether this is a Node.js single executable application. */
+    readonly sea?: boolean;
     readonly platform: NodeJS.Platform;
     readonly environment: Readonly<Record<string, string | undefined>>;
     readonly version: string;
@@ -66,9 +75,12 @@ export function describeInstallation(probe: InstallationProbe): Installation {
     const windows = probe.platform === 'win32';
     const path = windows ? win32 : posix;
     const root = path.resolve(path.dirname(probe.modulePath), '..', '..');
-    const node = path.join(root, 'node', windows ? 'node.exe' : 'node');
+    const executable =
+        probe.sea === true
+            ? path.join(root, 'bin', windows ? 'erden.exe' : 'erden')
+            : path.join(root, 'node', windows ? 'node.exe' : 'node');
     if (
-        !same(path.resolve(probe.execPath), node, probe.platform) ||
+        !same(path.resolve(probe.execPath), executable, probe.platform) ||
         !same(path.basename(path.dirname(probe.modulePath)), 'dist', probe.platform)
     ) {
         return { method: 'source' };
@@ -101,6 +113,7 @@ export function nodeInstallation(version: string): Installation {
     return describeInstallation({
         modulePath: fileURLToPath(import.meta.url),
         execPath: process.execPath,
+        sea: isSea(),
         platform: process.platform,
         environment: process.env,
         version,

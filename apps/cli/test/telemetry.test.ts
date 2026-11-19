@@ -14,7 +14,14 @@ import {
     type Installation,
 } from '../src/installation.js';
 import { CLI_EXIT, runCli, type CliRuntime } from '../src/main.js';
-import { beginSession, type BackgroundJob, type SessionDependencies } from '../src/session.js';
+import { runSingleExecutable } from '../src/sea.js';
+import {
+    BACKGROUND_JOB_ARGUMENT,
+    backgroundArguments,
+    beginSession,
+    type BackgroundJob,
+    type SessionDependencies,
+} from '../src/session.js';
 import {
     TELEMETRY_NOTICE,
     inCi,
@@ -359,11 +366,47 @@ describe('installation', () => {
                 version: '0.1.0',
             }).method,
         ).toBe('source');
+        // The single executable (bin/erden) of a release archive, and Node.js running anything else.
+        function sea(platform: NodeJS.Platform, root: string, executable: string, environment: Record<string, string>) {
+            const sep = platform === 'win32' ? '\\' : '/';
+            return describeInstallation({
+                modulePath: [root, 'lib', 'dist', 'installation.js'].join(sep),
+                execPath: [root, 'bin', executable].join(sep),
+                sea: true,
+                platform,
+                environment,
+                version: '0.1.0',
+            }).method;
+        }
+        expect(sea('linux', '/home/alice/.local/share/erden/0.1.0', 'erden', { HOME: '/home/alice' })).toBe('script');
+        expect(
+            sea('win32', 'C:\\Users\\alice\\AppData\\Local\\Programs\\Erden\\0.1.0', 'erden.exe', {
+                LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local',
+            }),
+        ).toBe('script');
+        expect(sea('darwin', '/opt/homebrew/Cellar/erden/0.1.0/libexec', 'erden', {})).toBe('homebrew');
+        expect(sea('linux', '/opt/erden-0.1.0', 'node', { HOME: '/home/alice' })).toBe('source');
         expect(stateDirectory({ HOME: '/home/alice' }, 'linux')).toBe('/home/alice/.config/erden');
         expect(stateDirectory({ HOME: '/home/alice', XDG_CONFIG_HOME: '/x' }, 'linux')).toBe('/x/erden');
         expect(stateDirectory({ LOCALAPPDATA: 'C:\\L' }, 'win32')).toBe('C:\\L\\Erden');
         expect(stateDirectory({ HOME: 'relative' }, 'linux')).toBeUndefined();
         expect(cliUserAgent('0.1.0', 'win32', 'x64')).toBe('erden/0.1.0 (win32; x64)');
+    });
+});
+
+describe('the background job of the single executable', () => {
+    it('starts the executable in its background mode, and only a single executable runs that mode', async () => {
+        const job: BackgroundJob = { schema: 'erden.background-job/v2', userAgent: 'erden/0.1.0 (linux; x64)' };
+        const encoded = Buffer.from(JSON.stringify(job), 'utf8').toString('base64url');
+        expect(backgroundArguments(job, true, '/x/background.js')).toEqual([BACKGROUND_JOB_ARGUMENT, encoded]);
+        expect(backgroundArguments(job, false, '/x/background.js')).toEqual(['/x/background.js', encoded]);
+        const before = process.exitCode;
+        try {
+            await runSingleExecutable([BACKGROUND_JOB_ARGUMENT, encoded], true);
+            expect(process.exitCode).toBe(before);
+        } finally {
+            process.exitCode = before;
+        }
     });
 });
 
