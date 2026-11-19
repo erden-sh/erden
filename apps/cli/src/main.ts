@@ -120,6 +120,7 @@ import {
 } from './telemetry.js';
 import {
     UpgradeError,
+    nodeLibc,
     nodePathExists,
     nodeRunInstaller,
     nodeTemporaryDirectory,
@@ -265,6 +266,7 @@ function nodeUpgradeRuntime(): CliUpgradeRuntime {
         version,
         platform: process.platform,
         arch: process.arch,
+        libc: nodeLibc(),
         userAgent: cliUserAgent(version),
         installation: nodeInstallation(version),
         environment: process.env,

@@ -7,7 +7,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanupTestTempRoot, makeTestTempRoot } from '../../../scripts/lib/test-temp-root.mjs';
 import type { Installation } from '../src/installation.js';
 import { CLI_EXIT, runCli, type CliRuntime } from '../src/main.js';
-import { fromReleaseHost, parseSha256Sums, windowsPowerShell, type CliUpgradeRuntime } from '../src/upgrade.js';
+import {
+    fromReleaseHost,
+    nodeLibc,
+    parseSha256Sums,
+    windowsPowerShell,
+    type CliUpgradeRuntime,
+} from '../src/upgrade.js';
 
 const roots: string[] = [];
 function tempRoot(): string {
@@ -37,6 +43,7 @@ function release(version: string, tamper?: string): Release {
         'install.sh': `#!/bin/sh\necho installed ${version}\n`,
         'install.ps1': `Write-Output 'installed ${version}'\n`,
         [`erden-${version}-linux-x64.tar.gz`]: `archive ${version} linux-x64`,
+        [`erden-${version}-linux-x64-musl.tar.gz`]: `archive ${version} linux-x64-musl`,
         [`erden-${version}-win32-x64.zip`]: `archive ${version} win32-x64`,
     };
     const sums = Object.entries(files)
@@ -70,6 +77,7 @@ function harness(
         readonly telemetry?: boolean;
         readonly existing?: ReadonlyArray<string>;
         readonly servedFrom?: string;
+        readonly libc?: 'musl';
     } = {},
 ): Harness {
     let stdout = '';
@@ -82,6 +90,7 @@ function harness(
         version: current,
         platform,
         arch: 'x64',
+        libc: options.libc,
         userAgent: `erden/${current} (${platform}; x64)`,
         installation,
         environment: {},
@@ -160,6 +169,27 @@ describe('erden upgrade', () => {
             'https://github.com/erden-sh/erden/releases/download/v0.2.0/erden-0.2.0-linux-x64.tar.gz',
         ]);
         expect(new Set(h.requests.map((request) => request.userAgent))).toEqual(new Set(['erden/0.1.0 (linux; x64)']));
+    });
+
+    it('installs the musl archive on a musl Linux such as Alpine', async () => {
+        const h = harness('0.1.0', { stable: STABLE, canary: CANARY }, undefined, 'linux', { libc: 'musl' });
+        expect(await runCli(['upgrade'], h.runtime)).toBe(CLI_EXIT.success);
+        expect(h.installs).toHaveLength(1);
+        expect(h.installs[0]?.archive.endsWith('erden-0.2.0-linux-x64-musl.tar.gz')).toBe(true);
+        expect(h.installs[0]?.archiveText).toBe(STABLE.files['erden-0.2.0-linux-x64-musl.tar.gz']);
+        expect(h.requests.map((request) => request.url).at(-1)).toBe(
+            'https://github.com/erden-sh/erden/releases/download/v0.2.0/erden-0.2.0-linux-x64-musl.tar.gz',
+        );
+    });
+
+    it('names this Linux C library as install.sh does', () => {
+        const expected =
+            process.platform === 'linux' &&
+            typeof (process.report.getReport() as { header?: { glibcVersionRuntime?: unknown } }).header
+                ?.glibcVersionRuntime !== 'string'
+                ? 'musl'
+                : undefined;
+        expect(nodeLibc()).toBe(expected);
     });
 
     it('follows the canary channel when asked, and uses install.ps1 on Windows', async () => {
