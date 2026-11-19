@@ -1,9 +1,10 @@
 // Builds one platform's CLI archive twice, each from its own `git archive` export of the commit, and refuses unless
 // the two are byte-identical. Each build installs the export offline from the lockfile, builds the runtime packages,
 // deploys `@erden/cli` with its locked production dependencies (`pnpm deploy --prod`, hoisted, so the tree has no links),
-// drops pnpm's install-time state files, and adds the pinned Node.js runtime, a launcher, both engine binaries at
-// their platform packages' `bin/` paths, LICENSE, NOTICE and THIRD-PARTY-NOTICES/. The Node.js archive and the engine
-// binaries are checked against their pins first. The first build's tree is then run as a user would (smoke.mjs)
+// drops pnpm's install-time state files and the files the CLI never loads (lib/prune.mjs), and adds the pinned Node.js
+// runtime with its symbol tables stripped, a launcher, both engine binaries at their platform packages' `bin/` paths,
+// LICENSE, NOTICE and THIRD-PARTY-NOTICES/. The Node.js archive and the engine binaries are checked against their pins
+// first. The first build's tree is then run as a user would (smoke.mjs)
 // before it is archived, so a run that wrote into the tree would differ from the second build.
 //
 // Usage: node release/build-cli-archive.mjs --node <official archive> --reasoner <binary> --shacl <binary>
@@ -32,6 +33,7 @@ import { writeArchive } from './lib/archive.mjs';
 import { normalizeDeployedWorkspace, prepareLockedDeployment } from './lib/deploy.mjs';
 import { copyEngineNotices, writeNpmNotices } from './lib/notices.mjs';
 import { RELEASE_PLATFORMS, archiveName, assertPinned, hostPlatform } from './lib/platforms.mjs';
+import { pruneDeployedTree } from './lib/prune.mjs';
 import { smokeTest } from './lib/smoke.mjs';
 
 const release = import.meta.dirname;
@@ -113,6 +115,27 @@ function extractNode(nodeArchive, runtime, directory) {
     return { executable: join(top, runtime.executable), license: join(top, 'LICENSE') };
 }
 
+/**
+ * Strips the symbol tables of the Node.js executable at `path`, which nothing in the CLI reads: on Linux everything
+ * `strip --strip-all` removes (the dynamic symbols native addons link against stay); on macOS the local symbols
+ * (`strip -x`; the exported ones stay), after which the executable is signed again ad hoc, as Apple silicon runs only
+ * signed code. The Windows executable carries no symbols (they ship as a separate PDB), so it is left as it is.
+ * Returns how it was stripped, for the build record.
+ */
+function stripNode(path, platform) {
+    if (platform.os === 'linux') {
+        run('strip', ['--strip-all', path]);
+        return { tool: run('strip', ['--version']).split('\n')[0].trim(), mode: '--strip-all' };
+    }
+    if (platform.os === 'darwin') {
+        run('codesign', ['--remove-signature', path]);
+        run('strip', ['-x', path]);
+        run('codesign', ['--sign', '-', '--force', path]);
+        return { tool: 'strip (Xcode)', mode: '-x, signed ad hoc' };
+    }
+    return { tool: null, mode: 'none: the executable has no symbols' };
+}
+
 const POSIX_LAUNCHER = `#!/bin/sh
 # Runs the Erden CLI with the Node.js runtime this archive ships. Links to this file are followed to find it.
 set -e
@@ -170,6 +193,7 @@ function buildStage(source, stage, inputs) {
     const nodeExecutable = join(stage, 'node', basename(inputs.nodeRuntime.executable));
     copyFileSync(node.executable, nodeExecutable);
     chmodSync(nodeExecutable, 0o755);
+    const strip = stripNode(nodeExecutable, inputs.platform);
     mkdirSync(join(stage, 'bin'));
     for (const name of ['erden', 'den']) {
         if (inputs.platform.os === 'win32') {
@@ -188,7 +212,11 @@ function buildStage(source, stage, inputs) {
     copyFileSync(node.license, join(notices, 'node.js', 'LICENSE'));
     copyEngineNotices(join(source, 'reasoner/qualification'), notices, 'erden-reasoner');
     copyEngineNotices(join(source, 'shacl/qualification'), notices, 'erden-shacl');
-    return { packages, dependencyLockDigest: deployment.digest };
+    const pruned = pruneDeployedTree(
+        lib,
+        inputs.engines.map((engine) => `node_modules/${engine.packageName}`),
+    );
+    return { packages, dependencyLockDigest: deployment.digest, strip, pruned: pruned.length };
 }
 
 /** The engine pins of the exported tree for a platform; refuses a platform an engine has no pins for. */
@@ -262,7 +290,7 @@ async function main() {
                 assertPinned(engine.binary, engine.pin, engine.packageName);
             }
             const stage = join(temporary, label, prefix);
-            const { packages, dependencyLockDigest } = buildStage(source, stage, {
+            const { packages, dependencyLockDigest, strip, pruned } = buildStage(source, stage, {
                 engines,
                 nodeArchive: resolve(values.node),
                 nodeRuntime,
@@ -273,7 +301,14 @@ async function main() {
                 smoke = smokeTest(stage, join(source, 'examples/erden-demo'));
             }
             const archive = join(temporary, label, name);
-            runs.push({ label, packages, dependencyLockDigest, ...writeArchive(stage, prefix, archive, epoch) });
+            runs.push({
+                label,
+                packages,
+                dependencyLockDigest,
+                strip,
+                pruned,
+                ...writeArchive(stage, prefix, archive, epoch),
+            });
         }
         const reproducible = runs[0].sha256 === runs[1].sha256 && runs[0].bytes === runs[1].bytes;
         // On Linux a difference fails the build. On Windows and macOS, whose runner images no pin covers, it is a
@@ -294,7 +329,13 @@ async function main() {
             sourceCommit: commit,
             sourceDateEpoch: epoch,
             archive: { file: name, bytes: runs[0].bytes, sha256: runs[0].sha256 },
-            node: { version: nodeRuntimes.version, file: nodeRuntime.file, sha256: nodeRuntime.sha256 },
+            node: {
+                version: nodeRuntimes.version,
+                file: nodeRuntime.file,
+                sha256: nodeRuntime.sha256,
+                stripped: runs[0].strip,
+            },
+            prunedPaths: runs[0].pruned,
             dependencyLockDigest: runs[0].dependencyLockDigest,
             engines: {
                 reasoner: { packageName: pins.reasoner.packageName, sha256: pins.reasoner.sha256 },

@@ -18,6 +18,7 @@ import { test } from 'node:test';
 import { collectEntries, gzipBytes, tarBytes, writeArchive, zipBytes } from '../../release/lib/archive.mjs';
 import { normalizeDeployedWorkspace } from '../../release/lib/deploy.mjs';
 import { declaredLicense, writeNpmNotices } from '../../release/lib/notices.mjs';
+import { pruneDeployedTree } from '../../release/lib/prune.mjs';
 import { RELEASE_PLATFORMS, archiveName, assertPinned, hostPlatform, sha256 } from '../../release/lib/platforms.mjs';
 import { acceptedBuildResult, pinDifferences, pinsOf } from '../../release/pins.mjs';
 
@@ -151,6 +152,68 @@ test('archives of the same tree are byte-identical, sorted, with fixed owners, m
     } finally {
         rmSync(directory, { recursive: true, force: true });
         rmSync(out, { recursive: true, force: true });
+    }
+});
+
+test('the archive leaves out what the CLI never loads and keeps what it does', () => {
+    const lib = temporary('prune');
+    try {
+        const files = {
+            'package.json': '{}',
+            'dist/main.js': '',
+            'src/main.ts': '',
+            'node_modules/effect/src/Effect.ts': '',
+            'node_modules/effect/dist/Effect.js': '',
+            'node_modules/effect/dist/Effect.d.ts': '',
+            'node_modules/effect/dist/Effect.js.map': '',
+            'node_modules/effect/dist/Effect.d.cts': '',
+            'node_modules/oxigraph/node.js': '',
+            'node_modules/oxigraph/node_bg.wasm': '',
+            'node_modules/oxigraph/web.js': '',
+            'node_modules/oxigraph/web_bg.wasm': '',
+            'node_modules/oxigraph/LICENSE': '',
+            'node_modules/@erden/reasoner-distribution/src/index.js': '',
+            'node_modules/@erden/reasoner-linux-x64-gnu/bin/erden-reasoner': '',
+            'node_modules/@erden/reasoner-linux-arm64-gnu/metadata.json': '',
+            'node_modules/@erden/shacl-win32-x64-msvc/metadata.json': '',
+            'node_modules/@erden/shacl-linux-x64-gnu/metadata.json': '',
+        };
+        for (const [path, text] of Object.entries(files)) {
+            mkdirSync(join(lib, path, '..'), { recursive: true });
+            writeFileSync(join(lib, path), text);
+        }
+        const removed = pruneDeployedTree(lib, [
+            'node_modules/@erden/reasoner-linux-x64-gnu',
+            'node_modules/@erden/shacl-linux-x64-gnu',
+        ]);
+        assert.deepEqual(removed, [
+            'node_modules/@erden/reasoner-linux-arm64-gnu/',
+            'node_modules/@erden/shacl-win32-x64-msvc/',
+            'node_modules/effect/dist/Effect.d.cts',
+            'node_modules/effect/dist/Effect.d.ts',
+            'node_modules/effect/dist/Effect.js.map',
+            'node_modules/effect/src/Effect.ts',
+            'node_modules/oxigraph/web.js',
+            'node_modules/oxigraph/web_bg.wasm',
+            'src/main.ts',
+        ]);
+        const kept = collectEntries(lib, 'lib')
+            .filter((entry) => !entry.directory)
+            .map((entry) => entry.name.slice('lib/'.length));
+        assert.deepEqual(kept, [
+            'dist/main.js',
+            'node_modules/@erden/reasoner-distribution/src/index.js',
+            'node_modules/@erden/reasoner-linux-x64-gnu/bin/erden-reasoner',
+            'node_modules/@erden/shacl-linux-x64-gnu/metadata.json',
+            'node_modules/effect/dist/Effect.js',
+            'node_modules/oxigraph/LICENSE',
+            'node_modules/oxigraph/node.js',
+            'node_modules/oxigraph/node_bg.wasm',
+            'package.json',
+        ]);
+        assert.equal(existsSync(join(lib, 'src')), false, 'an emptied directory goes too');
+    } finally {
+        rmSync(lib, { recursive: true, force: true });
     }
 });
 
