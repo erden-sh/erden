@@ -12,14 +12,15 @@ usage() {
     cat << 'EOF'
 Installs the Erden CLI for this user, with no administrator rights: the archive for this platform goes to
 ~/.local/share/erden/<version>/, `erden` and `den` are linked into ~/.local/bin, and ~/.local/bin is added to the PATH
-in your shell profiles. The archive is checked against its SHA-256 digest before anything is extracted.
+in your shell profiles. The archive is checked against its SHA-256 digest before anything is extracted. The
+.tar.xz archive is used when xz (or a tar that reads xz, as macOS's does) is here, the .tar.gz otherwise.
 
   curl -fsSL https://erden.sh/install | sh
   curl -fsSL https://erden.sh/install | sh -s -- --no-modify-path
 
 Options:
   --version <version>   install this version instead of the one the script carries digests for (also ERDEN_VERSION)
-  --archive <file>      install a local archive, with no network request
+  --archive <file>      install a local archive (.tar.xz or .tar.gz), with no network request
   --no-modify-path      leave the shell profiles alone (also ERDEN_NO_MODIFY_PATH=1)
   --uninstall           remove Erden, its links and the PATH lines this script added
   -h, --help            print this help
@@ -122,23 +123,63 @@ check_musl_runtime() {
     done
 }
 
-# The file name, SHA-256 and size of this platform's archive in the pins this script carries.
-pinned_archive() {
-    case $platform in
-        linux-x64) file=$linux_x64_file sha=$linux_x64_sha256 bytes=$linux_x64_bytes ;;
-        linux-arm64) file=$linux_arm64_file sha=$linux_arm64_sha256 bytes=$linux_arm64_bytes ;;
-        linux-x64-musl) file=$linux_x64_musl_file sha=$linux_x64_musl_sha256 bytes=$linux_x64_musl_bytes ;;
-        linux-arm64-musl) file=$linux_arm64_musl_file sha=$linux_arm64_musl_sha256 bytes=$linux_arm64_musl_bytes ;;
-        darwin-arm64) file=$darwin_arm64_file sha=$darwin_arm64_sha256 bytes=$darwin_arm64_bytes ;;
-    esac
-    [ -n "$file" ] || fail "Erden $version has no archive for $platform"
+# How this machine extracts a .tar.xz: with xz, or with a tar that reads xz itself (macOS's bsdtar); empty if neither.
+detect_unxz() {
+    unxz=''
+    if has xz; then
+        unxz=xz
+    elif tar --version 2> /dev/null | grep -q liblzma; then
+        unxz=tar
+    fi
 }
 
-# Another version's archive, checked against that release's SHA256SUMS (fetched over HTTPS from the same release).
+# The file name, SHA-256 and size of this platform's archives in the pins this script carries: the .tar.gz, and the
+# .tar.xz (xz_*), which releases from before it do not have.
+pinned_archive() {
+    case $platform in
+        linux-x64)
+            file=$linux_x64_file sha=$linux_x64_sha256 bytes=$linux_x64_bytes
+            xz_file=$linux_x64_xz_file xz_sha=$linux_x64_xz_sha256 xz_bytes=$linux_x64_xz_bytes
+            ;;
+        linux-arm64)
+            file=$linux_arm64_file sha=$linux_arm64_sha256 bytes=$linux_arm64_bytes
+            xz_file=$linux_arm64_xz_file xz_sha=$linux_arm64_xz_sha256 xz_bytes=$linux_arm64_xz_bytes
+            ;;
+        linux-x64-musl)
+            file=$linux_x64_musl_file sha=$linux_x64_musl_sha256 bytes=$linux_x64_musl_bytes
+            xz_file=$linux_x64_musl_xz_file xz_sha=$linux_x64_musl_xz_sha256 xz_bytes=$linux_x64_musl_xz_bytes
+            ;;
+        linux-arm64-musl)
+            file=$linux_arm64_musl_file sha=$linux_arm64_musl_sha256 bytes=$linux_arm64_musl_bytes
+            xz_file=$linux_arm64_musl_xz_file xz_sha=$linux_arm64_musl_xz_sha256 xz_bytes=$linux_arm64_musl_xz_bytes
+            ;;
+        darwin-arm64)
+            file=$darwin_arm64_file sha=$darwin_arm64_sha256 bytes=$darwin_arm64_bytes
+            xz_file=$darwin_arm64_xz_file xz_sha=$darwin_arm64_xz_sha256 xz_bytes=$darwin_arm64_xz_bytes
+            ;;
+    esac
+    [ -n "$file" ] || fail "Erden $version has no archive for $platform"
+    # The .tar.xz is smaller: use it when there is one and this machine can extract it. A local archive is the format
+    # its name says.
+    case $archive in
+        *.tar.xz)
+            [ -n "$xz_file" ] || fail "Erden $version has no .tar.xz archive for $platform; use $file"
+            [ -n "$unxz" ] || fail "extracting $xz_file needs xz; install xz or use $file"
+            file=$xz_file sha=$xz_sha bytes=$xz_bytes
+            ;;
+        '') if [ -n "$xz_file" ] && [ -n "$unxz" ]; then file=$xz_file sha=$xz_sha bytes=$xz_bytes; fi ;;
+    esac
+}
+
+# Another version's archive, checked against that release's SHA256SUMS (fetched over HTTPS from the same release): its
+# .tar.xz when it lists one and xz is here, its .tar.gz otherwise.
 listed_archive() {
-    file="erden-$version-$platform.tar.gz"
     bytes=''
     download "$release_url/SHA256SUMS" "$work/SHA256SUMS" || fail "could not download $release_url/SHA256SUMS; is $version an Erden release?"
+    file="erden-$version-$platform.tar.gz"
+    if [ -n "$unxz" ] && awk -v name="erden-$version-$platform.tar.xz" '$2 == name { found = 1 } END { exit !found }' "$work/SHA256SUMS"; then
+        file="erden-$version-$platform.tar.xz"
+    fi
     sha=$(awk -v name="$file" '$2 == name { print $1 }' "$work/SHA256SUMS")
     case $sha in
         '') fail "Erden $version has no archive for $platform" ;;
@@ -309,6 +350,7 @@ uninstall() {
 install_erden() {
     detect_platform
     check_musl_runtime
+    detect_unxz
     mkdir -p "$data"
     work=$(mktemp -d "$data/.install.XXXXXX")
     trap 'rm -rf "$work"' EXIT
@@ -334,7 +376,16 @@ install_erden() {
     [ "$(digest "$work/$file")" = "$sha" ] || fail "the archive's SHA-256 is not the one $file was released with; nothing was installed"
 
     mkdir "$work/extract"
-    (cd "$work/extract" && gzip -dc "../$file" | tar -xf -) || fail "could not extract $file; nothing was installed"
+    case $file in
+        *.tar.xz)
+            if [ "$unxz" = xz ]; then
+                (cd "$work/extract" && xz -dc "../$file" | tar -xf -)
+            else
+                (cd "$work/extract" && tar -xJf "../$file")
+            fi
+            ;;
+        *) (cd "$work/extract" && gzip -dc "../$file" | tar -xf -) ;;
+    esac || fail "could not extract $file; nothing was installed"
     unpacked="$work/extract/erden-$version-$platform"
     [ -x "$unpacked/bin/erden" ] || fail "$file does not hold bin/erden; nothing was installed"
     [ -x "$unpacked/bin/den" ] || fail "$file does not hold bin/den; nothing was installed"

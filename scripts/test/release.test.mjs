@@ -15,11 +15,18 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
-import { collectEntries, gzipBytes, tarBytes, writeArchive, zipBytes } from '../../release/lib/archive.mjs';
+import {
+    collectEntries,
+    gzipBytes,
+    tarBytes,
+    writeArchive,
+    writeArchives,
+    zipBytes,
+} from '../../release/lib/archive.mjs';
 import { normalizeDeployedWorkspace } from '../../release/lib/deploy.mjs';
 import { declaredLicense, writeNpmNotices } from '../../release/lib/notices.mjs';
-import { pruneDeployedTree } from '../../release/lib/prune.mjs';
 import { RELEASE_PLATFORMS, archiveName, assertPinned, hostPlatform, sha256 } from '../../release/lib/platforms.mjs';
+import { pruneDeployedTree } from '../../release/lib/prune.mjs';
 import { acceptedBuildResult, pinDifferences, pinsOf } from '../../release/pins.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -155,6 +162,32 @@ test('archives of the same tree are byte-identical, sorted, with fixed owners, m
     }
 });
 
+const HAS_XZ = spawnSync('xz', ['--version']).status === 0;
+
+test(
+    'a .tar.xz holds the same tar as the .tar.gz and is byte-identical on every run',
+    { skip: !HAS_XZ && 'no xz' },
+    () => {
+        const directory = tree();
+        const out = temporary('xz');
+        try {
+            const outputs = ['a.tar.gz', 'a.tar.xz', 'b.tar.xz'].map((name) => join(out, name));
+            const [, first, second] = writeArchives(directory, 'erden-1.0.0-linux-x64', outputs, 1_700_000_000);
+            assert.deepEqual(first, second);
+            const xz = spawnSync('xz', ['-dc', outputs[1]]);
+            const gz = spawnSync('gzip', ['-dc', outputs[0]]);
+            assert.equal(xz.status, 0);
+            assert.ok(xz.stdout.equals(gz.stdout), 'both archives hold the same tar');
+            const list = spawnSync('xz', ['--list', '--robot', outputs[1]], { encoding: 'utf8' });
+            assert.match(list.stdout, /^file\t1\t1\t/mu, 'one stream, one block: written on one thread');
+            assert.match(list.stdout, /\tCRC64\t/u);
+        } finally {
+            rmSync(directory, { recursive: true, force: true });
+            rmSync(out, { recursive: true, force: true });
+        }
+    },
+);
+
 test('the archive leaves out what the CLI never loads and keeps what it does', () => {
     const lib = temporary('prune');
     try {
@@ -281,6 +314,15 @@ function record(platform, digest = 'a') {
             sha256: `sha256:${platform.length.toString(16).repeat(64)}`,
         },
         archive: { file: archiveName('1.0.0', platform), bytes: 10, sha256: `sha256:${digest.repeat(64)}` },
+        ...(RELEASE_PLATFORMS[platform].xz
+            ? {
+                  xzArchive: {
+                      file: archiveName('1.0.0', platform, 'tar.xz'),
+                      bytes: 8,
+                      sha256: `sha256:${digest.repeat(64)}`,
+                  },
+              }
+            : {}),
         engines: { reasoner: { sha256: `sha256:${'1'.repeat(64)}` }, shacl: { sha256: `sha256:${'2'.repeat(64)}` } },
     };
 }
@@ -301,6 +343,38 @@ test('a release accepts only the pinned archives and engines, on every release p
         pinDifferences(pins, changed, { release: true })[0],
         /^linux-x64: erden-1\.0\.0-linux-x64\.tar\.gz is sha256:b+ /u,
     );
+    assert.deepEqual(Object.keys(pins.xzArchives).sort(), [
+        'darwin-arm64',
+        'linux-arm64',
+        'linux-arm64-musl',
+        'linux-x64',
+        'linux-x64-musl',
+    ]);
+    assert.equal(pins.xzArchives['linux-x64'].file, 'erden-1.0.0-linux-x64.tar.xz');
+    const xzChanged = {
+        ...records,
+        'linux-arm64': {
+            ...records['linux-arm64'],
+            xzArchive: { ...records['linux-arm64'].xzArchive, bytes: 9 },
+        },
+    };
+    assert.match(
+        pinDifferences(pins, xzChanged, { release: true }).join('\n'),
+        /^linux-arm64: erden-1\.0\.0-linux-arm64\.tar\.xz is sha256:a+ \(9 bytes\)/mu,
+    );
+    const { xzArchive: _xz, ...noXz } = records['darwin-arm64'];
+    assert.match(
+        pinDifferences(pins, { ...records, 'darwin-arm64': noXz }, { release: true }).join('\n'),
+        /darwin-arm64: erden-1\.0\.0-darwin-arm64\.tar\.xz pinned but not built/u,
+    );
+    const { xzArchives: _pinned, ...gzOnly } = pins;
+    assert.match(
+        pinDifferences(gzOnly, records, { release: true }).join('\n'),
+        /linux-x64: no \.tar\.xz archive pinned/u,
+        'a release ships a .tar.xz on every platform that has one',
+    );
+    assert.equal(archiveName('1.0.0', 'linux-x64', 'tar.xz'), 'erden-1.0.0-linux-x64.tar.xz');
+    assert.throws(() => archiveName('1.0.0', 'win32-x64', 'tar.xz'), /ships no \.tar\.xz/u);
     const engine = {
         ...records,
         'darwin-arm64': {

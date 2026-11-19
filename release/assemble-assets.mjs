@@ -1,5 +1,6 @@
-// Assembles a release's assets after `pins.mjs verify --release` accepted the builds: the six archives, each checked
-// against its pin again, the committed install scripts (refused unless they carry the pins), SHA256SUMS over all of
+// Assembles a release's assets after `pins.mjs verify --release` accepted the builds: the six archives and the
+// .tar.xz archives beside them, each checked against its pin again, the committed install scripts (refused unless they
+// carry the pins), SHA256SUMS over all of
 // them, and the release notes.
 //
 // Usage: node release/assemble-assets.mjs --artifacts <dir> --version <version> --out <dir>
@@ -31,11 +32,15 @@ function main() {
     mkdirSync(out, { recursive: true });
     const sums = [];
     for (const platform of Object.keys(RELEASE_PLATFORMS).sort()) {
-        const pin = pins.archives[platform];
-        const source = join(resolve(values.artifacts), pin.file);
-        assertPinned(source, pin, `${platform} archive`);
-        copyFileSync(source, join(out, pin.file));
-        sums.push(`${pin.sha256.slice('sha256:'.length)}  ${pin.file}`);
+        for (const pin of [pins.archives[platform], pins.xzArchives?.[platform]]) {
+            if (pin === undefined) {
+                continue;
+            }
+            const source = join(resolve(values.artifacts), pin.file);
+            assertPinned(source, pin, `${platform} archive ${pin.file}`);
+            copyFileSync(source, join(out, pin.file));
+            sums.push(`${pin.sha256.slice('sha256:'.length)}  ${pin.file}`);
+        }
     }
     for (const name of ['install.sh', 'install.ps1']) {
         const bytes = readFileSync(join(release, name));
@@ -77,9 +82,11 @@ function main() {
             'alone) and remove it again with `--uninstall` or `-Uninstall`. On Alpine, install the C++ runtime first:',
             '`apk add libstdc++ libgcc`.',
             '',
-            'Each script carries the digests of every archive and refuses any other file. To install without network',
-            'access, download the archive for your platform and the script, carry both over, and run `sh install.sh --archive',
-            '<file>`, or `install.ps1 -Archive <file>` on Windows. `SHA256SUMS` lists every asset.',
+            'Linux and macOS archives come as `.tar.xz` and `.tar.gz`, with the same contents; `install.sh` downloads the',
+            'smaller `.tar.xz` when this machine can extract it (`xz`, or a `tar` with xz support) and the `.tar.gz`',
+            'otherwise. Each script carries the digests of every archive and refuses any other file. To install without',
+            'network access, download the archive for your platform and the script, carry both over, and run',
+            '`sh install.sh --archive <file>`, or `install.ps1 -Archive <file>` on Windows. `SHA256SUMS` lists every asset.',
             '',
             '## Verify',
             '',

@@ -4,8 +4,8 @@
 // drops pnpm's install-time state files and the files the CLI never loads (lib/prune.mjs), and adds the pinned Node.js
 // runtime with its symbol tables stripped, a launcher, both engine binaries at their platform packages' `bin/` paths,
 // LICENSE, NOTICE and THIRD-PARTY-NOTICES/. The Node.js archive and the engine binaries are checked against their pins
-// first. The first build's tree is then run as a user would (smoke.mjs)
-// before it is archived, so a run that wrote into the tree would differ from the second build.
+// first. The first build's tree is then run as a user would (smoke.mjs) before it is archived, so a run that wrote into
+// the tree would differ from the second build. Linux and macOS get a .tar.xz beside the .tar.gz; Windows gets a .zip.
 //
 // Usage: node release/build-cli-archive.mjs --node <official archive> --reasoner <binary> --shacl <binary>
 //            --out <directory> [--commit <sha>] [--source-date-epoch <seconds>]
@@ -29,7 +29,7 @@ import { parseArgs } from 'node:util';
 
 import { warnInJobSummary } from '../scripts/lib/ci-warning.mjs';
 
-import { writeArchive } from './lib/archive.mjs';
+import { writeArchives, xzVersion } from './lib/archive.mjs';
 import { normalizeDeployedWorkspace, prepareLockedDeployment } from './lib/deploy.mjs';
 import { copyEngineNotices, writeNpmNotices } from './lib/notices.mjs';
 import { RELEASE_PLATFORMS, archiveName, assertPinned, hostPlatform } from './lib/platforms.mjs';
@@ -270,6 +270,7 @@ async function main() {
     const out = resolve(values.out);
     mkdirSync(out, { recursive: true });
     const name = archiveName(version, platformName);
+    const names = platform.xz ? [name, archiveName(version, platformName, 'tar.xz')] : [name];
     const prefix = name.replace(/\.(?:tar\.gz|zip)$/u, '');
     const store = workspaceStoreArguments();
     // The native real path expands a Windows 8.3 short name, so the smoke run's tree has no aliased parent.
@@ -300,35 +301,43 @@ async function main() {
             if (label === 'a') {
                 smoke = smokeTest(stage, join(source, 'examples/erden-demo'));
             }
-            const archive = join(temporary, label, name);
-            runs.push({
-                label,
-                packages,
-                dependencyLockDigest,
-                strip,
-                pruned,
-                ...writeArchive(stage, prefix, archive, epoch),
-            });
+            const archives = writeArchives(
+                stage,
+                prefix,
+                names.map((file) => join(temporary, label, file)),
+                epoch,
+            ).map((archive, index) => ({ file: names[index], ...archive }));
+            runs.push({ label, packages, dependencyLockDigest, strip, pruned, archives });
         }
-        const reproducible = runs[0].sha256 === runs[1].sha256 && runs[0].bytes === runs[1].bytes;
+        const reproducible = runs[0].archives.every(
+            (archive, index) =>
+                archive.sha256 === runs[1].archives[index].sha256 && archive.bytes === runs[1].archives[index].bytes,
+        );
         // On Linux a difference fails the build. On Windows and macOS, whose runner images no pin covers, it is a
         // warning and the first build is kept: the pins name its bytes, and the tag publishes exactly those.
+        function digests(build) {
+            return build.archives.map((archive) => archive.sha256).join(', ');
+        }
         if (!reproducible && process.platform === 'linux') {
-            throw new Error(`${name} is not reproducible: ${runs[0].sha256} vs ${runs[1].sha256}`);
+            throw new Error(`${name} is not reproducible: ${digests(runs[0])} vs ${digests(runs[1])}`);
         }
         if (!reproducible) {
             warnInJobSummary(
-                `${name}: the two builds differ (${runs[0].sha256} vs ${runs[1].sha256}); the first is kept`,
+                `${name}: the two builds differ (${digests(runs[0])} vs ${digests(runs[1])}); the first is kept`,
             );
         }
-        copyFileSync(join(temporary, 'a', name), join(out, name));
+        for (const file of names) {
+            copyFileSync(join(temporary, 'a', file), join(out, file));
+        }
+        const [primary, xz] = runs[0].archives;
         const record = {
             schema: 'erden.cli-archive-build/v1',
             version,
             platform: platformName,
             sourceCommit: commit,
             sourceDateEpoch: epoch,
-            archive: { file: name, bytes: runs[0].bytes, sha256: runs[0].sha256 },
+            archive: primary,
+            ...(xz === undefined ? {} : { xzArchive: { ...xz, xz: xzVersion() } }),
             node: {
                 version: nodeRuntimes.version,
                 file: nodeRuntime.file,
@@ -342,14 +351,16 @@ async function main() {
                 shacl: { packageName: pins.shacl.packageName, sha256: pins.shacl.sha256 },
             },
             npmPackages: runs[0].packages,
-            runs: runs.map(({ label, bytes, sha256 }) => ({ label, bytes, sha256 })),
+            runs: runs.map(({ label, archives }) => ({ label, archives })),
             smoke,
             result: reproducible ? 'byte-identical' : 'native-builds-differ',
         };
         writeFileSync(join(out, `${platformName}.json`), `${JSON.stringify(record, null, 2)}\n`);
-        process.stdout.write(
-            `${name}: ${runs[0].sha256} (${String(runs[0].bytes)} bytes); ${reproducible ? 'both builds match' : 'the first build kept'}\n`,
-        );
+        for (const archive of runs[0].archives) {
+            process.stdout.write(
+                `${archive.file}: ${archive.sha256} (${String(archive.bytes)} bytes); ${reproducible ? 'both builds match' : 'the first build kept'}\n`,
+            );
+        }
     } finally {
         if (existsSync(temporary)) {
             rmSync(temporary, { recursive: true, force: true, maxRetries: 5 });

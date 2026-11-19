@@ -21,13 +21,15 @@ function shellVariables(pins) {
         .filter((platform) => RELEASE_PLATFORMS[platform].os !== 'win32')
         .sort()
         .flatMap((platform) => {
-            const pin = pins.archives[platform];
             const name = platform.replaceAll('-', '_');
             return [
-                `${name}_file='${pin?.file ?? ''}'`,
-                `${name}_sha256='${hex(pin)}'`,
-                `${name}_bytes='${pin === undefined ? '' : String(pin.bytes)}'`,
-            ];
+                [name, pins.archives[platform]],
+                [`${name}_xz`, pins.xzArchives?.[platform]],
+            ].flatMap(([prefix, pin]) => [
+                `${prefix}_file='${pin?.file ?? ''}'`,
+                `${prefix}_sha256='${hex(pin)}'`,
+                `${prefix}_bytes='${pin === undefined ? '' : String(pin.bytes)}'`,
+            ]);
         })
         .join('\n');
 }

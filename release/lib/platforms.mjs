@@ -12,6 +12,7 @@ export const RELEASE_PLATFORMS = Object.freeze({
         target: 'aarch64-apple-darwin',
         runner: 'macos-15',
         archive: 'tar.gz',
+        xz: true,
     }),
     'linux-arm64': Object.freeze({
         os: 'linux',
@@ -20,6 +21,7 @@ export const RELEASE_PLATFORMS = Object.freeze({
         target: 'aarch64-unknown-linux-gnu',
         runner: 'ubuntu-24.04-arm',
         archive: 'tar.gz',
+        xz: true,
     }),
     'linux-arm64-musl': Object.freeze({
         os: 'linux',
@@ -29,6 +31,7 @@ export const RELEASE_PLATFORMS = Object.freeze({
         target: 'aarch64-unknown-linux-musl',
         runner: 'ubuntu-24.04-arm',
         archive: 'tar.gz',
+        xz: true,
     }),
     'linux-x64': Object.freeze({
         os: 'linux',
@@ -37,6 +40,7 @@ export const RELEASE_PLATFORMS = Object.freeze({
         target: 'x86_64-unknown-linux-gnu',
         runner: 'ubuntu-24.04',
         archive: 'tar.gz',
+        xz: true,
     }),
     'linux-x64-musl': Object.freeze({
         os: 'linux',
@@ -46,6 +50,7 @@ export const RELEASE_PLATFORMS = Object.freeze({
         target: 'x86_64-unknown-linux-musl',
         runner: 'ubuntu-24.04',
         archive: 'tar.gz',
+        xz: true,
     }),
     'win32-x64': Object.freeze({
         os: 'win32',
@@ -81,9 +86,12 @@ export function hostPlatform(host = { platform: process.platform, arch: process.
     );
 }
 
-/** The archive file name of a version on a platform. */
-export function archiveName(version, platform) {
-    return `erden-${version}-${platform}.${RELEASE_PLATFORMS[platform].archive}`;
+/** The archive file name of a version on a platform: its primary archive, or with `format` 'tar.xz' its xz one. */
+export function archiveName(version, platform, format = RELEASE_PLATFORMS[platform].archive) {
+    if (format === 'tar.xz' && RELEASE_PLATFORMS[platform].xz !== true) {
+        throw new Error(`${platform} ships no .tar.xz archive`);
+    }
+    return `erden-${version}-${platform}.${format}`;
 }
 
 export function sha256(bytes) {

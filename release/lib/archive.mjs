@@ -1,7 +1,9 @@
 // Deterministic archives of a directory: the same tree gives the same bytes on every run. Entries are sorted by path,
 // every modification time is the given epoch, owner and group are 0 with no names, modes are 0755 for directories and
 // executables and 0644 otherwise, and nothing about the build host is recorded (gzip with no name, time 0 and a fixed
-// OS byte; zip with no extra fields). Symbolic links are refused, so an archive never points outside itself.
+// OS byte; xz with fixed settings on one thread; zip with no extra fields). Symbolic links are refused, so an archive
+// never points outside itself.
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -107,6 +109,31 @@ export function gzipBytes(bytes) {
     return compressed;
 }
 
+/**
+ * The xz settings every .tar.xz is written with. One thread, because a threaded xz splits its output into blocks by
+ * thread count; preset 9 (a 64 MiB dictionary, which also bounds what extracting needs) and a CRC64 check, xz's
+ * default. The same xz release gives the same bytes for the same input; the build record names the release.
+ */
+export const XZ_ARGUMENTS = Object.freeze(['--format=xz', '--check=crc64', '-9', '--threads=1', '--stdout', '-']);
+
+/** The `xz --version` line of the xz that writes the archives. */
+export function xzVersion() {
+    const child = spawnSync('xz', ['--version'], { encoding: 'utf8' });
+    if (child.status !== 0) {
+        throw new Error(`xz is needed to write .tar.xz archives: ${child.error?.message ?? child.stderr}`);
+    }
+    return child.stdout.split('\n')[0].trim();
+}
+
+/** `bytes` compressed by xz with XZ_ARGUMENTS. */
+export function xzBytes(bytes) {
+    const child = spawnSync('xz', XZ_ARGUMENTS, { input: bytes, maxBuffer: 1 << 30 });
+    if (child.status !== 0) {
+        throw new Error(`xz failed (${String(child.status)}): ${child.error?.message ?? child.stderr}`);
+    }
+    return child.stdout;
+}
+
 function dosDateTime(epoch) {
     const date = new Date(epoch * 1000);
     const year = Math.max(date.getUTCFullYear(), 1980);
@@ -175,10 +202,33 @@ export function zipBytes(entries, epoch) {
     return Buffer.concat([...locals, directory, end]);
 }
 
-/** Writes `directory` as `<prefix>/...` to `output` (`.tar.gz` or `.zip`); returns its size and SHA-256. */
-export function writeArchive(directory, prefix, output, epoch) {
+/**
+ * Writes `directory` as `<prefix>/...` to each of `outputs` (`.tar.gz`, `.tar.xz` or `.zip`, by name), from one walk
+ * of the tree; returns each output's size and SHA-256, in order.
+ */
+export function writeArchives(directory, prefix, outputs, epoch) {
     const entries = collectEntries(directory, prefix);
-    const bytes = output.endsWith('.zip') ? zipBytes(entries, epoch) : gzipBytes(tarBytes(entries, epoch));
-    writeFileSync(output, bytes);
-    return { bytes: bytes.length, sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}` };
+    let tar;
+    return outputs.map((output) => {
+        let bytes;
+        if (output.endsWith('.zip')) {
+            bytes = zipBytes(entries, epoch);
+        } else {
+            tar ??= tarBytes(entries, epoch);
+            if (output.endsWith('.tar.xz')) {
+                bytes = xzBytes(tar);
+            } else if (output.endsWith('.tar.gz')) {
+                bytes = gzipBytes(tar);
+            } else {
+                throw new Error(`No archive format for ${output}`);
+            }
+        }
+        writeFileSync(output, bytes);
+        return { bytes: bytes.length, sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}` };
+    });
+}
+
+/** Writes `directory` as `<prefix>/...` to `output` (`.tar.gz`, `.tar.xz` or `.zip`); returns its size and SHA-256. */
+export function writeArchive(directory, prefix, output, epoch) {
+    return writeArchives(directory, prefix, [output], epoch)[0];
 }
