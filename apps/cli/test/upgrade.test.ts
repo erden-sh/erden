@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { cleanupTestTempRoot, makeTestTempRoot } from '../../../scripts/lib/test-temp-root.mjs';
 import type { Installation } from '../src/installation.js';
 import { CLI_EXIT, runCli, type CliRuntime } from '../src/main.js';
-import { parseSha256Sums, type CliUpgradeRuntime } from '../src/upgrade.js';
+import { fromReleaseHost, parseSha256Sums, windowsPowerShell, type CliUpgradeRuntime } from '../src/upgrade.js';
 
 const roots: string[] = [];
 function tempRoot(): string {
@@ -51,7 +51,13 @@ function release(version: string, tamper?: string): Release {
 interface Harness {
     readonly runtime: CliRuntime;
     readonly requests: Array<{ url: string; userAgent: string | null }>;
-    readonly installs: Array<{ script: string; archive: string; scriptText: string; archiveText: string }>;
+    readonly installs: Array<{
+        script: string;
+        archive: string;
+        directory: string;
+        scriptText: string;
+        archiveText: string;
+    }>;
     readonly output: () => { stdout: string; stderr: string };
 }
 
@@ -60,6 +66,11 @@ function harness(
     releases: Record<'stable' | 'canary', Release>,
     installation: Installation = { method: 'script', root: `/home/alice/.local/share/erden/${current}` },
     platform = 'linux',
+    options: {
+        readonly telemetry?: boolean;
+        readonly existing?: ReadonlyArray<string>;
+        readonly servedFrom?: string;
+    } = {},
 ): Harness {
     let stdout = '';
     let stderr = '';
@@ -74,10 +85,12 @@ function harness(
         userAgent: `erden/${current} (${platform}; x64)`,
         installation,
         environment: {},
+        telemetryEnabled: () => options.telemetry ?? true,
+        pathExists: (path) => (options.existing ?? []).includes(path),
         async fetch(input, init) {
             const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
             requests.push({ url, userAgent: new Headers(init?.headers).get('user-agent') });
-            const update = /^https:\/\/erden\.sh\/updates\/(stable|canary)\/[^/]+\/[^/]+\/[^/]+$/u.exec(url);
+            const update = /^https:\/\/erden\.sh\/updates\/(stable|canary)(?:\/[^/]+\/[^/]+\/[^/]+)?$/u.exec(url);
             if (update !== null) {
                 const latest = releases[update[1] as 'stable' | 'canary'];
                 return await Promise.resolve(
@@ -88,13 +101,16 @@ function harness(
                     }),
                 );
             }
-            const download = /^https:\/\/erden\.sh\/download\/v([^/]+)\/(.+)$/u.exec(url);
+            const download = /^https:\/\/github\.com\/erden-sh\/erden\/releases\/download\/v([^/]+)\/(.+)$/u.exec(url);
             const found = Object.values(releases).find((candidate) => candidate.version === download?.[1]);
             const name = download?.[2] as string;
             const text = name === 'SHA256SUMS' ? found?.sums : found?.files[name];
-            return await Promise.resolve(
-                text === undefined ? new Response('missing', { status: 404 }) : new Response(text),
-            );
+            const response = text === undefined ? new Response('missing', { status: 404 }) : new Response(text);
+            // GitHub redirects a release download to its asset storage; the final address is what is checked.
+            Object.defineProperty(response, 'url', {
+                value: `https://${options.servedFrom ?? 'release-assets.githubusercontent.com'}/assets/${name}`,
+            });
+            return await Promise.resolve(response);
         },
         temporaryDirectory() {
             counter += 1;
@@ -102,10 +118,11 @@ function harness(
             mkdirSync(directory);
             return directory;
         },
-        runInstaller(script, archive) {
+        runInstaller(script, archive, directory) {
             installs.push({
                 script,
                 archive,
+                directory,
                 scriptText: readFileSync(script, 'utf8'),
                 archiveText: readFileSync(archive, 'utf8'),
             });
@@ -133,27 +150,50 @@ describe('erden upgrade', () => {
         expect(h.installs[0]?.scriptText).toBe(STABLE.files['install.sh']);
         expect(h.installs[0]?.archiveText).toBe(STABLE.files['erden-0.2.0-linux-x64.tar.gz']);
         expect(h.installs[0]?.archive.endsWith('erden-0.2.0-linux-x64.tar.gz')).toBe(true);
+        expect(h.installs[0]?.directory).toBe(dirname(h.installs[0]?.archive as string));
         expect(existsSync(h.installs[0]?.archive as string)).toBe(false);
         expect(h.output().stdout).toContain('Upgraded Erden from 0.1.0 to 0.2.0');
         expect(h.requests.map((request) => request.url)).toEqual([
             'https://erden.sh/updates/stable/linux/x64/0.1.0',
-            'https://erden.sh/download/v0.2.0/SHA256SUMS',
-            'https://erden.sh/download/v0.2.0/install.sh',
-            'https://erden.sh/download/v0.2.0/erden-0.2.0-linux-x64.tar.gz',
+            'https://github.com/erden-sh/erden/releases/download/v0.2.0/SHA256SUMS',
+            'https://github.com/erden-sh/erden/releases/download/v0.2.0/install.sh',
+            'https://github.com/erden-sh/erden/releases/download/v0.2.0/erden-0.2.0-linux-x64.tar.gz',
         ]);
         expect(new Set(h.requests.map((request) => request.userAgent))).toEqual(new Set(['erden/0.1.0 (linux; x64)']));
     });
 
     it('follows the canary channel when asked, and uses install.ps1 on Windows', async () => {
-        const h = harness(
-            '0.1.0',
-            { stable: STABLE, canary: CANARY },
-            { method: 'script', root: 'C:\\x\\Erden\\0.1.0' },
-            'win32',
-        );
+        const root = 'C:\\Users\\alice\\AppData\\Local\\Programs\\Erden\\0.1.0';
+        const h = harness('0.1.0', { stable: STABLE, canary: CANARY }, { method: 'script', root }, 'win32');
         expect(await runCli(['upgrade', '--channel', 'canary'], h.runtime)).toBe(CLI_EXIT.success);
         expect(h.installs[0]?.script.endsWith('install.ps1')).toBe(true);
         expect(h.installs[0]?.archive.endsWith('erden-0.3.0-rc.1-win32-x64.zip')).toBe(true);
+        // No shim yet: the PATH change is spelled out, and the old version must stay.
+        const message = h.output().stdout;
+        expect(message).toContain(
+            'Replace C:\\Users\\alice\\AppData\\Local\\Programs\\Erden\\0.1.0\\bin with C:\\Users\\alice\\AppData\\Local\\Programs\\Erden\\0.3.0-rc.1\\bin in your user PATH',
+        );
+        expect(message).toContain(`Keep ${root} until then`);
+        expect(message).not.toContain('remove it');
+        const shimmed = harness('0.1.0', { stable: STABLE, canary: CANARY }, { method: 'script', root }, 'win32', {
+            existing: ['C:\\Users\\alice\\AppData\\Local\\Programs\\Erden\\bin\\erden.cmd'],
+        });
+        expect(await runCli(['upgrade'], shimmed.runtime)).toBe(CLI_EXIT.success);
+        expect(shimmed.output().stdout).toContain(
+            'erden in C:\\Users\\alice\\AppData\\Local\\Programs\\Erden\\bin now runs 0.2.0',
+        );
+    });
+
+    it('asks the uncounted release address when telemetry is off, and refuses downloads from other hosts', async () => {
+        const off = harness('0.1.0', { stable: STABLE, canary: CANARY }, undefined, 'linux', { telemetry: false });
+        expect(await runCli(['upgrade', '--check'], off.runtime)).toBe(CLI_EXIT.success);
+        expect(off.requests.map((request) => request.url)).toEqual(['https://erden.sh/updates/stable']);
+        const foreign = harness('0.1.0', { stable: STABLE, canary: CANARY }, undefined, 'linux', {
+            servedFrom: 'attacker.example',
+        });
+        expect(await runCli(['upgrade'], foreign.runtime)).toBe(CLI_EXIT.operational);
+        expect(foreign.output().stderr).toContain("was not served by GitHub's release hosts [UPGRADE_DOWNLOAD_FAILED]");
+        expect(foreign.installs).toEqual([]);
     });
 
     it('refuses files that differ from SHA256SUMS and installs nothing', async () => {
@@ -202,6 +242,19 @@ describe('erden upgrade', () => {
         expect(await runCli(['upgrade', '--channel', 'nightly'], h.runtime)).toBe(CLI_EXIT.usage);
         expect(await runCli(['upgrade', 'now'], h.runtime)).toBe(CLI_EXIT.usage);
         expect(await runCli(['upgrade', '--check', '--check'], h.runtime)).toBe(CLI_EXIT.usage);
+    });
+
+    it('runs Windows PowerShell by its absolute path and accepts only GitHub release hosts', () => {
+        expect(windowsPowerShell({ SystemRoot: 'D:\\Win' })).toBe(
+            'D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        );
+        expect(windowsPowerShell({})).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+        expect(fromReleaseHost('https://github.com/erden-sh/erden/releases/download/v0.1.0/SHA256SUMS')).toBe(true);
+        expect(fromReleaseHost('https://objects.githubusercontent.com/x')).toBe(true);
+        expect(fromReleaseHost('https://release-assets.githubusercontent.com/x')).toBe(true);
+        for (const url of ['http://github.com/x', 'https://github.com.example/x', 'https://erden.sh/x', '']) {
+            expect(fromReleaseHost(url), url).toBe(false);
+        }
     });
 
     it('reads SHA256SUMS lines in both sha256sum formats', () => {

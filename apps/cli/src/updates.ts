@@ -56,23 +56,49 @@ export function compareVersions(left: string, right: string): number {
     return 0;
 }
 
-/** The release endpoint's origin; ERDEN_RELEASES_ORIGIN replaces it for testing against a local Worker. */
-export function releasesOrigin(environment: Environment): string {
-    const configured = environment.ERDEN_RELEASES_ORIGIN;
-    if (configured !== undefined && /^https?:\/\/[^/?#]+$/u.test(configured)) {
-        return configured;
+/**
+ * An origin a testing variable may name instead of the default: any https origin, or http only on this machine
+ * (localhost, 127.0.0.1, [::1]), so the variable can never send a request in the clear over the network.
+ */
+export function testingOrigin(configured: string | undefined, fallback: string): string {
+    if (configured === undefined) {
+        return fallback;
     }
-    return RELEASES_ORIGIN;
+    try {
+        const url = new URL(configured);
+        const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+        if (
+            url.origin === configured &&
+            (url.protocol === 'https:' || (url.protocol === 'http:' && local)) &&
+            url.username === '' &&
+            url.password === ''
+        ) {
+            return url.origin;
+        }
+    } catch {
+        // Not a URL: the default stands.
+    }
+    return fallback;
 }
 
+/** The release endpoint's origin; ERDEN_RELEASES_ORIGIN replaces it for testing against a local Worker. */
+export function releasesOrigin(environment: Environment): string {
+    return testingOrigin(environment.ERDEN_RELEASES_ORIGIN, RELEASES_ORIGIN);
+}
+
+/**
+ * The address that answers the channel's latest release. With telemetry on it names the asking CLI's OS, architecture
+ * and version, which the release Worker counts per day; with telemetry off it names only the channel, an address the
+ * Worker never counts.
+ */
 export function updateEndpoint(
     origin: string,
     channel: ReleaseChannel,
-    platform: string,
-    arch: string,
-    version: string,
-) {
-    return `${origin}/updates/${channel}/${platform}/${arch}/${version}`;
+    client: { readonly platform: string; readonly arch: string; readonly version: string } | null,
+): string {
+    return client === null
+        ? `${origin}/updates/${channel}`
+        : `${origin}/updates/${channel}/${client.platform}/${client.arch}/${client.version}`;
 }
 
 /** The channel's latest release from the endpoint; throws on any failure. */

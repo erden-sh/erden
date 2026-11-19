@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage } from 'node:http';
 import { join } from 'node:path';
 
@@ -125,39 +125,95 @@ describe('telemetry settings', () => {
 });
 
 describe('the session around a command', () => {
-    it('shows the notice once, sends nothing that run, then sends only the documented fields', () => {
+    function queued(directory: string): unknown[] {
+        const path = join(directory, 'telemetry-queue.jsonl');
+        return existsSync(path)
+            ? readFileSync(path, 'utf8')
+                  .split('\n')
+                  .filter(Boolean)
+                  .map((line) => JSON.parse(line) as unknown)
+            : [];
+    }
+
+    it('shows the notice once with nothing sent or checked that run, then queues only the documented fields', () => {
         const directory = tempRoot();
         const first = session(directory);
-        expect(first.stderr).toBe(TELEMETRY_NOTICE);
-        expect(first.jobs.every((job) => job.event === undefined)).toBe(true);
+        expect(first).toEqual({ stderr: TELEMETRY_NOTICE, jobs: [] });
+        expect(queued(directory)).toEqual([]);
+        expect(existsSync(join(directory, 'update-check.json'))).toBe(false);
         const state = readTelemetryState(join(directory, 'telemetry.json'));
         expect(state).toMatchObject({ enabled: true, noticeShown: true });
 
         const second = session(directory);
         expect(second.stderr).toBe('');
-        const event = second.jobs[0]?.event;
-        expect(event?.url).toBe('https://telemetry.erden.sh/v1/events');
-        expect(event?.body).toEqual({
-            schema: 'erden.telemetry-event/v1',
-            installId: state?.installId,
-            version: '0.1.0',
-            channel: 'stable',
-            os: 'linux',
-            arch: 'x64',
-            command: 'check',
-            outcome: 'failure',
-            durationMs: 1234,
-        });
-        expect(JSON.stringify(second.jobs)).not.toContain('secret-project');
-        expect(second.jobs[0]?.userAgent).toBe('erden/0.1.0 (linux; x64)');
+        expect(queued(directory)).toEqual([
+            {
+                schema: 'erden.telemetry-event/v1',
+                installId: state?.installId,
+                version: '0.1.0',
+                channel: 'stable',
+                os: 'linux',
+                arch: 'x64',
+                command: 'check',
+                outcome: 'failure',
+                durationMs: 1234,
+            },
+        ]);
+        expect(second.jobs).toEqual([
+            {
+                schema: 'erden.background-job/v2',
+                userAgent: 'erden/0.1.0 (linux; x64)',
+                events: {
+                    url: 'https://telemetry.erden.sh/v1/events',
+                    path: join(directory, 'telemetry-queue.jsonl'),
+                },
+                // Telemetry is on, so the check names this CLI, which the release Worker counts.
+                updateCheck: {
+                    url: 'https://erden.sh/updates/stable/linux/x64/0.1.0',
+                    path: join(directory, 'update-check.json'),
+                    channel: 'stable',
+                },
+            },
+        ]);
+        expect(readFileSync(join(directory, 'telemetry-queue.jsonl'), 'utf8')).not.toContain('secret-project');
     });
 
-    it('writes nothing and sends nothing when an opt-out applies', () => {
-        for (const environment of [{ DO_NOT_TRACK: '1' }, { ERDEN_TELEMETRY_DISABLED: '1' }, { CI: 'true' }]) {
+    it('starts at most one sender a second for events, queueing the rest', () => {
+        const directory = tempRoot();
+        const quiet = { stdoutIsTty: false };
+        session(directory, quiet);
+        function at(time: string) {
+            return { ...quiet, now: () => Date.parse(time) };
+        }
+        expect(session(directory, at('2026-11-19T12:00:00.000Z')).jobs).toHaveLength(1);
+        expect(session(directory, at('2026-11-19T12:00:00.500Z')).jobs).toEqual([]);
+        expect(session(directory, at('2026-11-19T12:00:01.200Z')).jobs).toHaveLength(1);
+        expect(queued(directory)).toHaveLength(3);
+    });
+
+    it('queues nothing when an opt-out applies, and checks updates only at the address that is not counted', () => {
+        for (const environment of [{ ERDEN_TELEMETRY_DISABLED: '1' }, { ERDEN_TELEMETRY_DISABLED: 'yes' }]) {
             const directory = tempRoot();
             const run = session(directory, { environment });
             expect(run.stderr).toBe('');
-            expect(run.jobs.some((job) => job.event !== undefined)).toBe(false);
+            expect(run.jobs.map((job) => [job.events, job.updateCheck?.url])).toEqual([
+                [undefined, 'https://erden.sh/updates/stable'],
+            ]);
+            expect(existsSync(join(directory, 'telemetry.json'))).toBe(false);
+            expect(queued(directory)).toEqual([]);
+        }
+        const disabledByCommand = tempRoot();
+        session(disabledByCommand);
+        writeFileSync(
+            join(disabledByCommand, 'telemetry.json'),
+            JSON.stringify({ ...readTelemetryState(join(disabledByCommand, 'telemetry.json')), enabled: false }),
+        );
+        expect(session(disabledByCommand).jobs.map((job) => [job.events, job.updateCheck?.url])).toEqual([
+            [undefined, 'https://erden.sh/updates/stable'],
+        ]);
+        for (const environment of [{ DO_NOT_TRACK: '1' }, { CI: 'true' }]) {
+            const directory = tempRoot();
+            expect(session(directory, { environment })).toEqual({ stderr: '', jobs: [] });
             expect(existsSync(join(directory, 'telemetry.json'))).toBe(false);
         }
         const source = tempRoot();
@@ -168,10 +224,34 @@ describe('the session around a command', () => {
     it('sends no event for erden telemetry itself, and prints instead of sending under ERDEN_TELEMETRY_DEBUG', () => {
         const directory = tempRoot();
         session(directory);
-        expect(session(directory, {}, ['telemetry', 'status']).jobs).toEqual([]);
+        expect(session(directory, { stdoutIsTty: false }, ['telemetry', 'status']).jobs).toEqual([]);
         const debug = session(directory, { environment: { ERDEN_TELEMETRY_DEBUG: '1' }, stdoutIsTty: false });
         expect(debug.stderr).toContain('Erden telemetry (debug, not sent): {"schema":"erden.telemetry-event/v1"');
         expect(debug.jobs).toEqual([]);
+        expect(queued(directory)).toEqual([]);
+    });
+
+    it('accepts only https or local http for the testing origins', () => {
+        const directory = tempRoot();
+        session(directory);
+        let second = 0;
+        function origins(environment: Record<string, string>) {
+            second += 2000;
+            const now = Date.parse('2026-11-25T00:00:00Z') + second;
+            return session(directory, { environment, now: () => now }).jobs.map((job) => [
+                job.events?.url,
+                job.updateCheck?.url,
+            ]);
+        }
+        expect(
+            origins({
+                ERDEN_TELEMETRY_ORIGIN: 'http://127.0.0.1:8788',
+                ERDEN_RELEASES_ORIGIN: 'http://localhost:8789',
+            }),
+        ).toEqual([['http://127.0.0.1:8788/v1/events', 'http://localhost:8789/updates/stable/linux/x64/0.1.0']]);
+        expect(
+            origins({ ERDEN_TELEMETRY_ORIGIN: 'http://telemetry.example', ERDEN_RELEASES_ORIGIN: 'ftp://x.example' }),
+        ).toEqual([['https://telemetry.erden.sh/v1/events', undefined]]);
     });
 
     it('checks for updates at most once a day and prints one line from the stored check', () => {
@@ -180,10 +260,10 @@ describe('the session around a command', () => {
         const first = session(directory, disabled);
         expect(first.jobs).toEqual([
             {
-                schema: 'erden.background-job/v1',
+                schema: 'erden.background-job/v2',
                 userAgent: 'erden/0.1.0 (linux; x64)',
                 updateCheck: {
-                    url: 'https://erden.sh/updates/stable/linux/x64/0.1.0',
+                    url: 'https://erden.sh/updates/stable',
                     path: join(directory, 'update-check.json'),
                     channel: 'stable',
                 },
@@ -324,7 +404,7 @@ describe('erden telemetry', () => {
 });
 
 describe('the background process', () => {
-    it('posts the event and stores the update check, with only the CLI User-Agent', async () => {
+    it('posts the queued events, empties the queue and stores the update check, with only the CLI User-Agent', async () => {
         const directory = tempRoot();
         const requests: Array<{ url: string; headers: IncomingMessage['headers']; body: string }> = [];
         const server = createServer((request, response) => {
@@ -346,23 +426,23 @@ describe('the background process', () => {
         const origin = `http://127.0.0.1:${String(typeof address === 'object' && address !== null ? address.port : 0)}`;
         try {
             const path = join(directory, 'update-check.json');
+            const queue = join(directory, 'telemetry-queue.jsonl');
+            const event = {
+                schema: 'erden.telemetry-event/v1',
+                installId: '3b241101-e2bb-4255-8caf-4136c566a962',
+                version: '0.1.0',
+                channel: 'stable',
+                os: 'linux',
+                arch: 'x64',
+                command: 'check',
+                outcome: 'success',
+                durationMs: 5,
+            };
+            writeFileSync(queue, `${JSON.stringify(event)}\n${JSON.stringify({ ...event, command: 'pack' })}\n`);
             const job: BackgroundJob = {
-                schema: 'erden.background-job/v1',
+                schema: 'erden.background-job/v2',
                 userAgent: 'erden/0.1.0 (linux; x64)',
-                event: {
-                    url: `${origin}/v1/events`,
-                    body: {
-                        schema: 'erden.telemetry-event/v1',
-                        installId: '3b241101-e2bb-4255-8caf-4136c566a962',
-                        version: '0.1.0',
-                        channel: 'stable',
-                        os: 'linux',
-                        arch: 'x64',
-                        command: 'check',
-                        outcome: 'success',
-                        durationMs: 5,
-                    },
-                },
+                events: { url: `${origin}/v1/events`, path: queue },
                 updateCheck: { url: `${origin}/updates/stable/linux/x64/0.1.0`, path, channel: 'stable' },
             };
             await runBackgroundJob(Buffer.from(JSON.stringify(job)).toString('base64url'));
@@ -370,15 +450,19 @@ describe('the background process', () => {
             expect(requests.map((request) => request.url).sort()).toEqual([
                 '/updates/stable/linux/x64/0.1.0',
                 '/v1/events',
+                '/v1/events',
             ]);
+            expect(readdirSync(directory).sort()).toEqual(['update-check.json']);
             for (const request of requests) {
                 expect(request.headers['user-agent']).toBe('erden/0.1.0 (linux; x64)');
                 expect(request.headers.cookie).toBeUndefined();
                 expect(request.headers.authorization).toBeUndefined();
             }
-            expect(JSON.parse(requests.find((request) => request.url === '/v1/events')?.body ?? '')).toEqual(
-                job.event?.body,
-            );
+            expect(
+                requests
+                    .filter((request) => request.url === '/v1/events')
+                    .map((request) => JSON.parse(request.body) as unknown),
+            ).toEqual([event, { ...event, command: 'pack' }]);
             expect(readFileSync(path, 'utf8')).not.toContain('installId');
         } finally {
             await new Promise<void>((resolve) => {

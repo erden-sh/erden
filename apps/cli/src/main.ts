@@ -119,6 +119,7 @@ import {
 } from './telemetry.js';
 import {
     UpgradeError,
+    nodePathExists,
     nodeRunInstaller,
     nodeTemporaryDirectory,
     runUpgrade,
@@ -238,8 +239,40 @@ export interface CliAuthenticationRuntime {
 const nodeCliStdout: CliTextSink = Object.freeze({ write: (text: string) => process.stdout.write(text) });
 const nodeCliStderr: CliTextSink = Object.freeze({ write: (text: string) => process.stderr.write(text) });
 const nodeCliDependencyRegistry = makeNodeCliDependencyRegistryComposition(nodeCliStderr);
-const nodeCliVersion = cliVersion();
-const nodeCliInstallation = nodeInstallation(nodeCliVersion);
+
+/** The telemetry runtime of this process, made on first use, so reading package.json never fails at import. */
+function nodeTelemetryRuntime(): CliTelemetryRuntime {
+    return Object.freeze({
+        environment: process.env,
+        installation: nodeInstallation(cliVersion()),
+        stateDirectory: stateDirectory(process.env, process.platform),
+    });
+}
+
+/** Whether telemetry is on for this process, as `erden telemetry status` would say. */
+function nodeTelemetryEnabled(): boolean {
+    const runtime = nodeTelemetryRuntime();
+    const directory = runtime.stateDirectory;
+    const state = directory === undefined ? null : readTelemetryState(telemetryStatePath(directory));
+    return telemetryStatus(runtime.environment, state, runtime.installation, directory !== undefined).enabled;
+}
+
+function nodeUpgradeRuntime(): CliUpgradeRuntime {
+    const version = cliVersion();
+    return Object.freeze({
+        version,
+        platform: process.platform,
+        arch: process.arch,
+        userAgent: cliUserAgent(version),
+        installation: nodeInstallation(version),
+        environment: process.env,
+        telemetryEnabled: nodeTelemetryEnabled,
+        fetch: async (input: string | URL | Request, init?: RequestInit) => await fetch(input, init),
+        pathExists: nodePathExists,
+        temporaryDirectory: nodeTemporaryDirectory,
+        runInstaller: nodeRunInstaller,
+    });
+}
 
 export const nodeCliRuntime: CliRuntime = Object.freeze({
     cwd: () => process.cwd(),
@@ -297,22 +330,12 @@ export const nodeCliRuntime: CliRuntime = Object.freeze({
     publication: nodeCliPublicationRuntime,
     query: nodeCliQueryRuntime,
     environment: () => process.env,
-    telemetry: Object.freeze({
-        environment: process.env,
-        installation: nodeCliInstallation,
-        stateDirectory: stateDirectory(process.env, process.platform),
-    }),
-    upgrade: Object.freeze({
-        version: nodeCliVersion,
-        platform: process.platform,
-        arch: process.arch,
-        userAgent: cliUserAgent(nodeCliVersion),
-        installation: nodeCliInstallation,
-        environment: process.env,
-        fetch: async (input: string | URL | Request, init?: RequestInit) => await fetch(input, init),
-        temporaryDirectory: nodeTemporaryDirectory,
-        runInstaller: nodeRunInstaller,
-    }),
+    get telemetry() {
+        return nodeTelemetryRuntime();
+    },
+    get upgrade() {
+        return nodeUpgradeRuntime();
+    },
 });
 
 class CliUsageError extends Error {
