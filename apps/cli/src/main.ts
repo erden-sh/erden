@@ -1,5 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { Effect } from 'effect';
@@ -98,6 +97,7 @@ import {
     type ReasonerLimits,
 } from '@erden/project';
 
+import { cliUserAgent, cliVersion, nodeInstallation, stateDirectory, type Installation } from './installation.js';
 import { nodeCliQueryRuntime, runQueryCommand, type CliQueryRuntime } from './query.js';
 import {
     CliRegistryUsageError,
@@ -107,9 +107,27 @@ import {
     runPublishCommand,
     type CliPublicationRuntime,
 } from './registry.js';
+import {
+    TELEMETRY_DOCS_URL,
+    describeReason,
+    newTelemetryState,
+    readTelemetryState,
+    telemetryStatePath,
+    telemetryStatus,
+    writeTelemetryState,
+    type Environment,
+} from './telemetry.js';
+import {
+    UpgradeError,
+    nodeRunInstaller,
+    nodeTemporaryDirectory,
+    runUpgrade,
+    type CliUpgradeRuntime,
+} from './upgrade.js';
 
 export type { CliPublicationRuntime } from './registry.js';
 export type { CliQueryRuntime } from './query.js';
+export type { CliUpgradeRuntime } from './upgrade.js';
 
 export const CLI_EXIT = Object.freeze({
     success: 0,
@@ -117,11 +135,6 @@ export const CLI_EXIT = Object.freeze({
     usage: 2,
     operational: 3,
 } as const);
-
-function cliVersion(): string {
-    return (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string })
-        .version;
-}
 
 export const CLI_HELP = `Erden CLI: check, package, and publish ontologies (also available as den)
 
@@ -143,6 +156,8 @@ Usage:
   erden doctor [--json]
   erden login [--registry <origin>]
   erden logout [--registry <origin>]
+  erden upgrade [--channel <stable|canary>] [--check]
+  erden telemetry <status|enable|disable>
   erden help
   erden --version
 
@@ -158,6 +173,12 @@ Reasoner limits (check):
   ERDEN_REASONER_MAX_WALL_TIME_MS, ERDEN_REASONER_MAX_INPUT_AXIOMS, ERDEN_REASONER_MAX_INFERENCES, and
   ERDEN_REASONER_MAX_REQUEST_BYTES (the request and its answer) set the reasoner budget. Set the same values as a
   registry to predict its publication verdict.
+
+Telemetry and updates:
+  A release build sends anonymous usage data: each command's name, outcome and duration, the version, channel, OS,
+  CPU architecture and a random install ID; never paths, names, IRIs, arguments or error text. Turn it off with
+  erden telemetry disable, ERDEN_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1; it is off in CI. A daily update notice on
+  terminals is hidden by ERDEN_NO_UPDATE_NOTIFIER=1. Details: ${TELEMETRY_DOCS_URL}
 `;
 
 export interface CliServices {
@@ -186,6 +207,16 @@ export interface CliRuntime {
     readonly query?: CliQueryRuntime;
     /** The process environment; only the documented `ERDEN_REASONER_MAX_*` settings are read from it. */
     readonly environment?: () => Readonly<Record<string, string | undefined>>;
+    readonly telemetry?: CliTelemetryRuntime;
+    readonly upgrade?: CliUpgradeRuntime;
+}
+
+/** Where `erden telemetry` keeps its setting, and what decides it besides the setting. */
+export interface CliTelemetryRuntime {
+    readonly environment: Environment;
+    readonly installation: Installation;
+    /** The per-user state directory; undefined when the environment names no home. */
+    readonly stateDirectory: string | undefined;
 }
 
 export interface CliAuthenticationRuntime {
@@ -207,6 +238,8 @@ export interface CliAuthenticationRuntime {
 const nodeCliStdout: CliTextSink = Object.freeze({ write: (text: string) => process.stdout.write(text) });
 const nodeCliStderr: CliTextSink = Object.freeze({ write: (text: string) => process.stderr.write(text) });
 const nodeCliDependencyRegistry = makeNodeCliDependencyRegistryComposition(nodeCliStderr);
+const nodeCliVersion = cliVersion();
+const nodeCliInstallation = nodeInstallation(nodeCliVersion);
 
 export const nodeCliRuntime: CliRuntime = Object.freeze({
     cwd: () => process.cwd(),
@@ -264,6 +297,22 @@ export const nodeCliRuntime: CliRuntime = Object.freeze({
     publication: nodeCliPublicationRuntime,
     query: nodeCliQueryRuntime,
     environment: () => process.env,
+    telemetry: Object.freeze({
+        environment: process.env,
+        installation: nodeCliInstallation,
+        stateDirectory: stateDirectory(process.env, process.platform),
+    }),
+    upgrade: Object.freeze({
+        version: nodeCliVersion,
+        platform: process.platform,
+        arch: process.arch,
+        userAgent: cliUserAgent(nodeCliVersion),
+        installation: nodeCliInstallation,
+        environment: process.env,
+        fetch: async (input: string | URL | Request, init?: RequestInit) => await fetch(input, init),
+        temporaryDirectory: nodeTemporaryDirectory,
+        runInstaller: nodeRunInstaller,
+    }),
 });
 
 class CliUsageError extends Error {
@@ -1029,6 +1078,98 @@ async function storeCommand(arguments_: ReadonlyArray<string>, runtime: CliRunti
     }
 }
 
+function telemetryCommand(arguments_: ReadonlyArray<string>, runtime: CliRuntime): number {
+    const [action, ...rest] = arguments_;
+    if (rest.length > 0 || (action !== 'status' && action !== 'enable' && action !== 'disable')) {
+        throw new CliUsageError('telemetry requires exactly one status, enable, or disable subcommand');
+    }
+    const telemetry = runtime.telemetry;
+    if (telemetry === undefined) {
+        return unexpectedOperationalFailure(runtime);
+    }
+    const directory = telemetry.stateDirectory;
+    const path = directory === undefined ? undefined : telemetryStatePath(directory);
+    const state = path === undefined ? null : readTelemetryState(path);
+    if (action !== 'status') {
+        if (path === undefined) {
+            runtime.stderr.write('Erden has no home directory to keep the telemetry setting in [TELEMETRY_NO_STATE]\n');
+            return CLI_EXIT.operational;
+        }
+        try {
+            writeTelemetryState(path, newTelemetryState(action === 'enable', true, state));
+        } catch {
+            runtime.stderr.write('Erden could not save the telemetry setting [TELEMETRY_STATE_FAILED]\n');
+            return CLI_EXIT.operational;
+        }
+    }
+    const saved = path === undefined ? null : readTelemetryState(path);
+    const status = telemetryStatus(telemetry.environment, saved, telemetry.installation, directory !== undefined);
+    const lines = [`Erden telemetry is ${describeReason(status.reason)}`];
+    if (action === 'enable' && !status.enabled) {
+        lines.push('Your setting is saved as enabled, but nothing is sent while the reason above applies.');
+    }
+    if (action === 'disable') {
+        lines.push('Nothing is sent from now on.');
+    }
+    if (saved !== null) {
+        lines.push(`Install ID: ${saved.installId}`);
+    }
+    if (path !== undefined) {
+        lines.push(`Setting: ${terminalText(path)}`);
+    }
+    lines.push(`Details: ${TELEMETRY_DOCS_URL}`);
+    runtime.stdout.write(`${lines.join('\n')}\n`);
+    return CLI_EXIT.success;
+}
+
+async function upgradeCommand(arguments_: ReadonlyArray<string>, runtime: CliRuntime): Promise<number> {
+    let channel: 'stable' | 'canary' | undefined;
+    let check = false;
+    const seen = new Set<string>();
+    for (let index = 0; index < arguments_.length; index += 1) {
+        const argument = arguments_[index] as string;
+        if (argument === '--check') {
+            markOnce(seen, argument);
+            check = true;
+        } else if (argument === '--channel') {
+            markOnce(seen, argument);
+            const value = requireValue(arguments_, index, argument);
+            if (value !== 'stable' && value !== 'canary') {
+                throw new CliUsageError('--channel must be stable or canary');
+            }
+            channel = value;
+            index += 1;
+        } else {
+            throw new CliUsageError(
+                argument.startsWith('-')
+                    ? `unknown upgrade flag: ${argument}`
+                    : 'upgrade does not accept positional arguments',
+            );
+        }
+    }
+    const upgrade = runtime.upgrade;
+    if (upgrade === undefined) {
+        return unexpectedOperationalFailure(runtime);
+    }
+    try {
+        return await runUpgrade({ check, ...(channel === undefined ? {} : { channel }) }, upgrade, {
+            stdout: (text) => {
+                runtime.stdout.write(text);
+            },
+            stderr: (text) => {
+                runtime.stderr.write(text);
+            },
+        });
+    } catch (cause) {
+        if (cause instanceof UpgradeError) {
+            runtime.stderr.write(`${terminalText(cause.message)} [${cause.code}]\n`);
+            return cause.exit === 1 ? CLI_EXIT.semanticFailure : CLI_EXIT.operational;
+        }
+        runtime.stderr.write('Erden upgrade could not complete [UPGRADE_FAILED]\n');
+        return CLI_EXIT.operational;
+    }
+}
+
 export async function runCli(arguments_: ReadonlyArray<string>, runtime: CliRuntime = nodeCliRuntime): Promise<number> {
     const command = arguments_[0];
     if (command === '--version' || command === '-V' || command === 'version') {
@@ -1101,6 +1242,12 @@ export async function runCli(arguments_: ReadonlyArray<string>, runtime: CliRunt
         }
         if (command === 'logout') {
             return await logoutCommand(arguments_.slice(1), runtime);
+        }
+        if (command === 'telemetry') {
+            return telemetryCommand(arguments_.slice(1), runtime);
+        }
+        if (command === 'upgrade') {
+            return await upgradeCommand(arguments_.slice(1), runtime);
         }
         throw new CliUsageError(`unknown command: ${command}`);
     } catch (cause) {

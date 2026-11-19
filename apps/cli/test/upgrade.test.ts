@@ -1,0 +1,216 @@
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { cleanupTestTempRoot, makeTestTempRoot } from '../../../scripts/lib/test-temp-root.mjs';
+import type { Installation } from '../src/installation.js';
+import { CLI_EXIT, runCli, type CliRuntime } from '../src/main.js';
+import { parseSha256Sums, type CliUpgradeRuntime } from '../src/upgrade.js';
+
+const roots: string[] = [];
+function tempRoot(): string {
+    const root = makeTestTempRoot('erden-cli-upgrade-');
+    roots.push(root);
+    return root;
+}
+
+afterEach(() => {
+    for (const root of roots.splice(0)) {
+        cleanupTestTempRoot(root);
+    }
+});
+
+function hex(bytes: string | Uint8Array): string {
+    return createHash('sha256').update(bytes).digest('hex');
+}
+
+interface Release {
+    readonly version: string;
+    readonly files: Record<string, string>;
+    readonly sums?: string;
+}
+
+function release(version: string, tamper?: string): Release {
+    const files: Record<string, string> = {
+        'install.sh': `#!/bin/sh\necho installed ${version}\n`,
+        'install.ps1': `Write-Output 'installed ${version}'\n`,
+        [`erden-${version}-linux-x64.tar.gz`]: `archive ${version} linux-x64`,
+        [`erden-${version}-win32-x64.zip`]: `archive ${version} win32-x64`,
+    };
+    const sums = Object.entries(files)
+        .map(([name, text]) => `${hex(text)}  ${name}`)
+        .join('\n');
+    if (tamper !== undefined) {
+        files[tamper] = `${files[tamper] as string} changed`;
+    }
+    return { version, files, sums: `${sums}\n` };
+}
+
+interface Harness {
+    readonly runtime: CliRuntime;
+    readonly requests: Array<{ url: string; userAgent: string | null }>;
+    readonly installs: Array<{ script: string; archive: string; scriptText: string; archiveText: string }>;
+    readonly output: () => { stdout: string; stderr: string };
+}
+
+function harness(
+    current: string,
+    releases: Record<'stable' | 'canary', Release>,
+    installation: Installation = { method: 'script', root: `/home/alice/.local/share/erden/${current}` },
+    platform = 'linux',
+): Harness {
+    let stdout = '';
+    let stderr = '';
+    const requests: Harness['requests'] = [];
+    const installs: Harness['installs'] = [];
+    const work = tempRoot();
+    let counter = 0;
+    const upgrade: CliUpgradeRuntime = {
+        version: current,
+        platform,
+        arch: 'x64',
+        userAgent: `erden/${current} (${platform}; x64)`,
+        installation,
+        environment: {},
+        async fetch(input, init) {
+            const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+            requests.push({ url, userAgent: new Headers(init?.headers).get('user-agent') });
+            const update = /^https:\/\/erden\.sh\/updates\/(stable|canary)\/[^/]+\/[^/]+\/[^/]+$/u.exec(url);
+            if (update !== null) {
+                const latest = releases[update[1] as 'stable' | 'canary'];
+                return await Promise.resolve(
+                    Response.json({
+                        schema: 'erden.cli-release/v1',
+                        version: latest.version,
+                        tag: `v${latest.version}`,
+                    }),
+                );
+            }
+            const download = /^https:\/\/erden\.sh\/download\/v([^/]+)\/(.+)$/u.exec(url);
+            const found = Object.values(releases).find((candidate) => candidate.version === download?.[1]);
+            const name = download?.[2] as string;
+            const text = name === 'SHA256SUMS' ? found?.sums : found?.files[name];
+            return await Promise.resolve(
+                text === undefined ? new Response('missing', { status: 404 }) : new Response(text),
+            );
+        },
+        temporaryDirectory() {
+            counter += 1;
+            const directory = join(work, `download-${String(counter)}`);
+            mkdirSync(directory);
+            return directory;
+        },
+        runInstaller(script, archive) {
+            installs.push({
+                script,
+                archive,
+                scriptText: readFileSync(script, 'utf8'),
+                archiveText: readFileSync(archive, 'utf8'),
+            });
+            return { status: 0, stdout: 'Installed Erden\n', stderr: '' };
+        },
+    };
+    const runtime = {
+        cwd: () => '/',
+        stdout: { write: (text: string) => (stdout += text) },
+        stderr: { write: (text: string) => (stderr += text) },
+        services: {} as CliRuntime['services'],
+        upgrade,
+    } as CliRuntime;
+    return { runtime, requests, installs, output: () => ({ stdout, stderr }) };
+}
+
+const STABLE = release('0.2.0');
+const CANARY = release('0.3.0-rc.1');
+
+describe('erden upgrade', () => {
+    it('installs the newer release with its own install script after checking both files against SHA256SUMS', async () => {
+        const h = harness('0.1.0', { stable: STABLE, canary: CANARY });
+        expect(await runCli(['upgrade'], h.runtime)).toBe(CLI_EXIT.success);
+        expect(h.installs).toHaveLength(1);
+        expect(h.installs[0]?.scriptText).toBe(STABLE.files['install.sh']);
+        expect(h.installs[0]?.archiveText).toBe(STABLE.files['erden-0.2.0-linux-x64.tar.gz']);
+        expect(h.installs[0]?.archive.endsWith('erden-0.2.0-linux-x64.tar.gz')).toBe(true);
+        expect(existsSync(h.installs[0]?.archive as string)).toBe(false);
+        expect(h.output().stdout).toContain('Upgraded Erden from 0.1.0 to 0.2.0');
+        expect(h.requests.map((request) => request.url)).toEqual([
+            'https://erden.sh/updates/stable/linux/x64/0.1.0',
+            'https://erden.sh/download/v0.2.0/SHA256SUMS',
+            'https://erden.sh/download/v0.2.0/install.sh',
+            'https://erden.sh/download/v0.2.0/erden-0.2.0-linux-x64.tar.gz',
+        ]);
+        expect(new Set(h.requests.map((request) => request.userAgent))).toEqual(new Set(['erden/0.1.0 (linux; x64)']));
+    });
+
+    it('follows the canary channel when asked, and uses install.ps1 on Windows', async () => {
+        const h = harness(
+            '0.1.0',
+            { stable: STABLE, canary: CANARY },
+            { method: 'script', root: 'C:\\x\\Erden\\0.1.0' },
+            'win32',
+        );
+        expect(await runCli(['upgrade', '--channel', 'canary'], h.runtime)).toBe(CLI_EXIT.success);
+        expect(h.installs[0]?.script.endsWith('install.ps1')).toBe(true);
+        expect(h.installs[0]?.archive.endsWith('erden-0.3.0-rc.1-win32-x64.zip')).toBe(true);
+    });
+
+    it('refuses files that differ from SHA256SUMS and installs nothing', async () => {
+        for (const tampered of ['install.sh', 'erden-0.2.0-linux-x64.tar.gz']) {
+            const h = harness('0.1.0', { stable: release('0.2.0', tampered), canary: CANARY });
+            expect(await runCli(['upgrade'], h.runtime)).toBe(CLI_EXIT.operational);
+            expect(h.output().stderr).toContain('[UPGRADE_DIGEST_MISMATCH]');
+            expect(h.installs).toEqual([]);
+        }
+    });
+
+    it('says when it is already current, and --check only reports', async () => {
+        const current = harness('0.2.0', { stable: STABLE, canary: CANARY });
+        expect(await runCli(['upgrade'], current.runtime)).toBe(CLI_EXIT.success);
+        expect(current.output().stdout).toBe('Erden 0.2.0 is the latest stable release\n');
+        const check = harness('0.1.0', { stable: STABLE, canary: CANARY });
+        expect(await runCli(['upgrade', '--check'], check.runtime)).toBe(CLI_EXIT.success);
+        expect(check.output().stdout).toContain('Erden 0.2.0 is available on the stable channel (you have 0.1.0)');
+        expect(check.installs).toEqual([]);
+        // A canary build stays on canary unless told otherwise.
+        const canary = harness('0.3.0-rc.1', { stable: STABLE, canary: CANARY });
+        expect(await runCli(['upgrade'], canary.runtime)).toBe(CLI_EXIT.success);
+        expect(canary.output().stdout).toBe('Erden 0.3.0-rc.1 is the latest canary release\n');
+        const back = harness('0.3.0-rc.1', { stable: STABLE, canary: CANARY });
+        expect(await runCli(['upgrade', '--channel', 'stable'], back.runtime)).toBe(CLI_EXIT.success);
+        expect(back.installs[0]?.archive.endsWith('erden-0.2.0-linux-x64.tar.gz')).toBe(true);
+    });
+
+    it('refuses Homebrew, Scoop, hand-unpacked and source installs with a pointer', async () => {
+        const cases: Array<[Installation, string]> = [
+            [{ method: 'homebrew', root: '/opt/homebrew/Cellar/erden/0.1.0' }, 'brew upgrade erden'],
+            [{ method: 'scoop', root: 'C:\\scoop\\apps\\erden\\0.1.0' }, 'scoop update erden'],
+            [{ method: 'archive', root: '/opt/erden' }, 'https://erden.sh/install'],
+            [{ method: 'source' }, 'update the checkout'],
+        ];
+        for (const [installation, pointer] of cases) {
+            const h = harness('0.1.0', { stable: STABLE, canary: CANARY }, installation);
+            expect(await runCli(['upgrade'], h.runtime)).toBe(CLI_EXIT.semanticFailure);
+            expect(h.output().stderr).toContain(pointer);
+            expect(h.requests).toEqual([]);
+        }
+    });
+
+    it('rejects unknown arguments', async () => {
+        const h = harness('0.1.0', { stable: STABLE, canary: CANARY });
+        expect(await runCli(['upgrade', '--channel', 'nightly'], h.runtime)).toBe(CLI_EXIT.usage);
+        expect(await runCli(['upgrade', 'now'], h.runtime)).toBe(CLI_EXIT.usage);
+        expect(await runCli(['upgrade', '--check', '--check'], h.runtime)).toBe(CLI_EXIT.usage);
+    });
+
+    it('reads SHA256SUMS lines in both sha256sum formats', () => {
+        const digest = 'a'.repeat(64);
+        expect(parseSha256Sums(`${digest}  install.sh\n${digest} *erden-0.1.0-win32-x64.zip\r\nnoise\n`)).toEqual(
+            new Map([
+                ['install.sh', digest],
+                ['erden-0.1.0-win32-x64.zip', digest],
+            ]),
+        );
+    });
+});

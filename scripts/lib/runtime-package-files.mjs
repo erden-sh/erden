@@ -7,11 +7,17 @@ export const RUNTIME_DIST_FILES = new Map([
     [
         'apps/cli',
         [
+            ...emittedPair('background'),
             ...emittedPair('bin'),
             ...emittedPair('index'),
+            ...emittedPair('installation'),
             ...emittedPair('main'),
             ...emittedPair('query'),
             ...emittedPair('registry'),
+            ...emittedPair('session'),
+            ...emittedPair('telemetry'),
+            ...emittedPair('updates'),
+            ...emittedPair('upgrade'),
         ],
     ],
     [
