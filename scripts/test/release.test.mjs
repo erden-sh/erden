@@ -702,7 +702,9 @@ test('the Homebrew formula and the Scoop manifest name the pinned archives', asy
     const pins = pinsOf(records, { mintRunId: 1 });
     const formula = homebrewFormula(pins);
     for (const platform of ['darwin-arm64', 'linux-arm64', 'linux-x64']) {
-        const pin = pins.archives[platform];
+        // The .tar.xz, which Homebrew extracts (with xz, which it installs where it is missing).
+        const pin = pins.xzArchives[platform];
+        assert.ok(pin.file.endsWith('.tar.xz'), platform);
         assert.ok(
             formula.includes(
                 `url "https://github.com/erden-sh/erden/releases/download/v1.0.0/${pin.file}"\n      sha256 "${pin.sha256.slice(7)}"`,
@@ -720,7 +722,22 @@ test('the Homebrew formula and the Scoop manifest name the pinned archives', asy
         hash: pins.archives['win32-x64'].sha256.slice(7),
         extract_dir: 'erden-1.0.0-win32-x64',
     });
-    assert.deepEqual(manifest.bin, ['bin\\erden.cmd', 'bin\\den.cmd']);
+    assert.deepEqual(manifest.bin, ['bin\\erden.cmd', 'bin\\den.cmd'], 'an archive from before the single executable');
+    assert.equal(pins.layout, undefined);
+    const single = pinsOf(
+        Object.fromEntries(
+            Object.entries(records).map(([platform, value]) => [platform, { ...value, singleExecutable: {} }]),
+        ),
+        { mintRunId: 1 },
+    );
+    assert.equal(single.layout, 'single-executable');
+    assert.deepEqual(JSON.parse(scoopManifest(single)).bin, ['bin\\erden.exe', 'bin\\den.cmd']);
+    assert.throws(
+        () => pinsOf({ ...records, 'linux-x64': { ...records['linux-x64'], singleExecutable: {} } }),
+        /disagree on the archive layout/u,
+    );
+    const { xzArchives: _xz, ...gzOnly } = pins;
+    assert.match(homebrewFormula(gzOnly), /linux-x64\.tar\.gz"/u, 'a release without .tar.xz archives keeps .tar.gz');
     assert.equal(manifest.autoupdate.architecture['64bit'].hash.url, '$baseurl/SHA256SUMS');
     const { 'linux-arm64': _, ...partial } = pins.archives;
     assert.throws(() => homebrewFormula({ ...pins, archives: partial }), /has no linux-arm64 archive/u);

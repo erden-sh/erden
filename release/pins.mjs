@@ -66,6 +66,15 @@ function single(records, field) {
     return JSON.parse([...values][0]);
 }
 
+/** Whether the builds are single executables; refuses records that disagree. */
+function singleExecutable(records) {
+    const kinds = new Set(Object.values(records).map((record) => record.singleExecutable !== undefined));
+    if (kinds.size !== 1) {
+        throw new Error('The platform builds disagree on the archive layout');
+    }
+    return [...kinds][0];
+}
+
 /** The pins file a mint writes from its build records. */
 export function pinsOf(records, { allowPartial = false, mintRunId } = {}) {
     const missing = PLATFORMS.filter((platform) => records[platform] === undefined);
@@ -86,6 +95,9 @@ export function pinsOf(records, { allowPartial = false, mintRunId } = {}) {
             'node',
         ),
         complete: missing.length === 0,
+        // How the archives lay out the CLI: 'single-executable' (bin/erden is Node.js with the CLI built in) when every
+        // build record says so. Pins without it are of archives that run lib/dist/bin.js with node/node.
+        ...(singleExecutable(records) ? { layout: 'single-executable' } : {}),
         // The release run whose archive artifacts these pins name; the tag fetches and publishes exactly those.
         ...(mintRunId === undefined ? {} : { mintRunId }),
         archives: Object.fromEntries(platforms.map((platform) => [platform, records[platform].archive])),
