@@ -1,0 +1,120 @@
+name: release-canary
+
+# The canary track, modeled on cBranch's publish-rc.yml: a tag v<x.y.z>-rc.<n> publishes a GitHub prerelease, which
+# `erden upgrade --channel canary`, erden.sh/install/canary and the release Worker's canary channel pick up. release.yml
+# ignores these tags, so a canary can never become the latest stable release.
+#
+# A canary is made exactly like a stable release, with the same pins and the same discipline; only the tag and the
+# prerelease flag differ:
+# 1. Set apps/cli/package.json's version to x.y.z-rc.n and dispatch release.yml's mint with that version (engine mint
+#    first if the engines changed). It builds each archive twice and uploads release/pins/x.y.z-rc.n.json.
+# 2. Commit those pins and the install scripts written from them (release/write-install-scripts.mjs), on main or on a
+#    branch, and push the tag vx.y.z-rc.n on that commit.
+# 3. This workflow builds nothing: it fetches the archives of the mint run the pins name, refuses unless every one is
+#    byte for byte the pinned one, publishes them with SHA256SUMS and the install scripts as a prerelease that is never
+#    marked latest, and installs it from its own assets on all four platforms (verify-release.yml).
+#
+# It runs only in the public repository (named erden-sh/erden and not private). GitHub keeps a run's artifacts for 90
+# days, so the tag must follow its mint within that time.
+on:
+    push:
+        tags:
+            - 'v*-rc.*'
+
+permissions:
+    contents: read
+
+concurrency:
+    group: release-canary
+    cancel-in-progress: false
+
+jobs:
+    published-archives:
+        name: the mint's archives
+        # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: read
+            actions: read
+        outputs:
+            mint-run: ${{ steps.mint.outputs.run }}
+        steps:
+            - name: Refuse anything but a v<x.y.z>-rc.<n> tag
+              shell: bash
+              run: |
+                  if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+                      echo "$GITHUB_REF_NAME is not a canary tag (v<x.y.z>-rc.<n>)"
+                      exit 1
+                  fi
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+            - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+              with:
+                  node-version-file: .node-version
+            - name: The mint run the committed pins name
+              id: mint
+              shell: bash
+              run: echo "run=$(node release/pins.mjs mint-run --version "${GITHUB_REF_NAME#v}")" >> "$GITHUB_OUTPUT"
+            - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+              with:
+                  pattern: archive-*
+                  merge-multiple: true
+                  path: release-build
+                  run-id: ${{ steps.mint.outputs.run }}
+                  github-token: ${{ github.token }}
+            - name: Refuse anything but the pinned bytes
+              run: node release/pins.mjs verify --artifacts release-build --release --tag "$GITHUB_REF_NAME"
+
+    publish:
+        name: publish the prerelease
+        needs: published-archives
+        # Only the public repository publishes: a private copy of it never does, whatever it is named.
+        if: ${{ github.repository == 'erden-sh/erden' && github.event.repository.private == false }}
+        # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: write
+            actions: read
+        steps:
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+            - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+              with:
+                  node-version-file: .node-version
+            - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+              with:
+                  pattern: archive-*
+                  merge-multiple: true
+                  path: release-build
+                  run-id: ${{ needs.published-archives.outputs.mint-run }}
+                  github-token: ${{ github.token }}
+            # The same check as the job before, on the bytes this job publishes.
+            - name: Refuse anything but the pinned bytes
+              run: node release/pins.mjs verify --artifacts release-build --release --tag "$GITHUB_REF_NAME"
+            - name: Assemble the assets
+              shell: bash
+              run: |
+                  node release/assemble-assets.mjs --artifacts release-build --version "${GITHUB_REF_NAME#v}" --out assets
+                  {
+                      echo "**This is a canary release** for trying what comes next. It is a GitHub prerelease, never the"
+                      echo 'latest release, and it gets no security fixes. Stay on it with `erden upgrade --channel canary`,'
+                      echo 'or go back to stable with `erden upgrade --channel stable`.'
+                      echo
+                      cat assets/RELEASE-NOTES.md
+                  } > assets/CANARY-NOTES.md
+            - name: Create a draft prerelease, check the uploaded assets, then publish it
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  gh release create "$GITHUB_REF_NAME" --draft --prerelease --latest=false --verify-tag --title "Erden ${GITHUB_REF_NAME#v} (canary)" --notes-file assets/CANARY-NOTES.md assets/erden-* assets/SHA256SUMS assets/install.sh assets/install.ps1
+                  mkdir uploaded
+                  gh release download "$GITHUB_REF_NAME" --dir uploaded
+                  (cd uploaded && sha256sum -c ../assets/SHA256SUMS)
+                  gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
+
+    # Installs the prerelease just published from its own assets, on every platform.
+    verify:
+        name: verify the published prerelease
+        needs: publish
+        uses: ./.github/workflows/verify-release.yml
+        with:
+            tag: ${{ github.ref_name }}

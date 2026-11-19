@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { requestRegistryJson, requestRegistryJsonWire } from '../src/http.js';
+import { putToSignedUrl, requestRegistryJson, requestRegistryJsonWire, setRegistryUserAgent } from '../src/http.js';
 import { RegistryClientError, encodeCanonicalJson } from '../src/wire.js';
 
 function response(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -11,6 +11,36 @@ function response(body: unknown, status = 200, headers: Record<string, string> =
 }
 
 describe('registry HTTP boundary', () => {
+    it('sends the configured User-Agent on registry and signed-URL requests, and refuses a malformed one', async () => {
+        const agents: Array<string | null> = [];
+        function capture(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+            agents.push(new Request(input, init).headers.get('user-agent'));
+            return Promise.resolve(response({ ok: true }));
+        }
+        setRegistryUserAgent('erden/0.1.0 (linux; x64)');
+        try {
+            await requestRegistryJson(
+                { registryOrigin: 'https://registry.example', path: '/api/v1/test', method: 'GET' },
+                { fetch: capture },
+            );
+            await putToSignedUrl(
+                {
+                    url: 'https://storage.example/object',
+                    headers: {},
+                    body: new Blob(['bytes']).stream(),
+                    idleTimeoutMilliseconds: 1000,
+                },
+                { fetch: capture },
+            );
+            expect(agents).toEqual(['erden/0.1.0 (linux; x64)', 'erden/0.1.0 (linux; x64)']);
+            expect(() => {
+                setRegistryUserAgent('erden/0.1.0 (linux; x64)\r\nx-user: someone');
+            }).toThrow(RegistryClientError);
+        } finally {
+            setRegistryUserAgent(undefined);
+        }
+    });
+
     it('uses a fixed canonical origin, canonical JSON, no redirects, and no ambient credentials', async () => {
         const requests: Request[] = [];
         const result = await requestRegistryJson(

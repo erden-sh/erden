@@ -50,7 +50,7 @@
     ],
     "overrides": [
         {
-            "files": ["apps/**/*.ts", "packages/**/*.ts", "reasoner/**/*.ts", "vitest.config.ts"],
+            "files": ["apps/**/*.ts", "packages/**/*.ts", "reasoner/**/*.ts", "workers/**/*.ts", "vitest.config.ts"],
             "plugins": ["import", "typescript"],
             "rules": {
                 "constructor-super": "off",

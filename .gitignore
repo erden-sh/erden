@@ -10,3 +10,6 @@ coverage/
 shacl/*/bin/
 reasoner/*/bin/
 reasoner/source-build/
+
+# Wrangler's local state (wrangler dev, local D1).
+.wrangler/

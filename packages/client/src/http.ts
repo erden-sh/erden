@@ -45,6 +45,25 @@ export interface OpenRegistryHttpResponse {
     readonly finish: () => void;
 }
 
+/** A User-Agent: printable ASCII, one product token, and an optional parenthesized comment. */
+const USER_AGENT = /^[!-~]{1,64}(?: \([ -~]{1,64}\))?$/u;
+let configuredUserAgent: string | undefined;
+
+/**
+ * Sets the User-Agent every request this client makes carries, in place of the runtime's default (the CLI sets
+ * `erden/<version> (<os>; <arch>)`). It names the software only, never the user or the machine.
+ */
+export function setRegistryUserAgent(value: string | undefined): void {
+    if (value !== undefined && !USER_AGENT.test(value)) {
+        throw new RegistryClientError('CLIENT_INPUT_INVALID');
+    }
+    configuredUserAgent = value;
+}
+
+function withUserAgent(headers: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
+    return configuredUserAgent === undefined ? headers : { ...headers, 'user-agent': configuredUserAgent };
+}
+
 const RETRY_ATTEMPTS = 3;
 
 function retryable(error: unknown): boolean {
@@ -260,7 +279,7 @@ export async function openRegistryHttpResponse(
             cache: 'no-store',
             credentials: 'omit',
             signal: controller.signal,
-            headers: raw.headers,
+            headers: withUserAgent(raw.headers),
             ...(raw.body === undefined ? {} : { body: raw.body }),
             ...(raw.streamingRequest === true ? { duplex: 'half' as const } : {}),
         };
@@ -370,7 +389,7 @@ export async function putToSignedUrl(
             cache: 'no-store',
             credentials: 'omit',
             signal: controller.signal,
-            headers: raw.headers,
+            headers: withUserAgent(raw.headers),
             body,
             duplex: 'half',
         };

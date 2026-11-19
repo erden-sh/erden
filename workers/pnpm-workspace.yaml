@@ -1,0 +1,2 @@
+# The Workers are their own pnpm workspace, so the repository's root install never pulls in Wrangler.
+packages: []

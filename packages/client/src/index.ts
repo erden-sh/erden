@@ -33,6 +33,7 @@ export type {
     RegistryReleaseQueryOutcome,
     RegistryReleaseQueryRefusal,
 } from './release-query.js';
+export { setRegistryUserAgent } from './http.js';
 export type { RegistryHttpRuntime } from './http.js';
 export { RegistryClientError } from './wire.js';
 export { getRegistryArtifactFile, listRegistryArtifactFiles } from './artifact-files.js';
