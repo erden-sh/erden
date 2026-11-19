@@ -24,6 +24,8 @@
         "production": {
             "name": "erden-releases",
             "observability": { "enabled": false },
+            // GITHUB_TOKEN (a secret) is required when ENVIRONMENT is production.
+            "vars": { "ENVIRONMENT": "production" },
             "routes": [
                 { "pattern": "erden.sh/install", "zone_name": "erden.sh" },
                 { "pattern": "erden.sh/install.ps1", "zone_name": "erden.sh" },

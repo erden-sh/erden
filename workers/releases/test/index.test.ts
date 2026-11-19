@@ -66,9 +66,15 @@ interface Harness {
     readonly pending: Array<Promise<unknown>>;
     readonly context: WorkerContext;
     readonly request: (path: string, init?: RequestInit, country?: string) => Promise<Response>;
+    /** Makes GitHub fail (true) or answer again (false), and empties the edge cache. */
+    readonly githubDown: (down: boolean) => void;
 }
 
-function harness(releases: unknown[] = RELEASES, latest: unknown = STABLE): Harness {
+function harness(
+    releases: unknown[] = RELEASES,
+    environment: { readonly ENVIRONMENT?: string; readonly GITHUB_TOKEN?: string } = {},
+): Harness {
+    let down = false;
     const calls: string[] = [];
     const pending: Array<Promise<unknown>> = [];
     const store = new Map<string, Response>();
@@ -86,17 +92,16 @@ function harness(releases: unknown[] = RELEASES, latest: unknown = STABLE): Harn
             const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
             calls.push(url);
             expect(new Headers(init?.headers).get('user-agent')).toBe('erden-releases-worker/1');
-            if (url.endsWith('/releases/latest')) {
-                return await Promise.resolve(
-                    latest === null ? new Response('', { status: 404 }) : Response.json(latest),
-                );
+            expect(url).toBe('https://api.github.com/repos/erden-sh/erden/releases?per_page=100');
+            if (down) {
+                return await Promise.resolve(new Response('unavailable', { status: 503 }));
             }
             return await Promise.resolve(Response.json(releases));
         },
         cache,
         now: () => NOW,
     };
-    const env = { DB: testD1(SCHEMA), REPORT_TOKEN: TOKEN };
+    const env: Env & { DB: TestD1 } = { ...environment, DB: testD1(SCHEMA), REPORT_TOKEN: TOKEN };
     const context: WorkerContext = { waitUntil: (promise) => pending.push(promise) };
     return {
         env,
@@ -110,6 +115,10 @@ function harness(releases: unknown[] = RELEASES, latest: unknown = STABLE): Harn
             const response = await handle(request, env, context, dependencies);
             await Promise.all(pending.splice(0));
             return response;
+        },
+        githubDown(value) {
+            down = value;
+            store.clear();
         },
     };
 }
@@ -134,11 +143,8 @@ describe('release Worker', () => {
         for (const path of ['/install/nightly', '/install.ps1/canary', '/install/canary/x', '/installer']) {
             expect((await h.request(path)).status).toBe(404);
         }
-        // One GitHub request per channel; the rest came from the edge cache.
-        expect(h.calls).toEqual([
-            'https://api.github.com/repos/erden-sh/erden/releases/latest',
-            'https://api.github.com/repos/erden-sh/erden/releases?per_page=50',
-        ]);
+        // One GitHub request; the rest came from the edge cache.
+        expect(h.calls).toEqual(['https://api.github.com/repos/erden-sh/erden/releases?per_page=100']);
         expect(
             h.env.DB.rows('SELECT channel, version, asset, client, hits FROM downloads ORDER BY channel, asset'),
         ).toEqual([
@@ -275,14 +281,56 @@ describe('release Worker', () => {
 
     it('lets canary follow stable once stable is newer, and has no canary before any release', async () => {
         const newer = { ...STABLE, tag_name: 'v0.2.0', assets: assets('0.2.0') };
-        const h = harness([...RELEASES, newer], newer);
+        const h = harness([...RELEASES, newer]);
         const canary = (await (await h.request('/updates/canary/linux/x64/0.2.0-rc.10')).json()) as {
             version: string;
         };
         expect(canary.version).toBe('0.2.0');
-        const empty = harness([], null);
+        const empty = harness([]);
         expect((await empty.request('/install')).status).toBe(404);
         expect((await empty.request('/updates/canary/linux/x64/0.1.0')).status).toBe(404);
+    });
+
+    it('counts only published versions as themselves, and never counts /updates/<channel>', async () => {
+        const h = harness();
+        const unknownTag = await h.request('/download/v9.9.9/install.sh');
+        expect(unknownTag.headers.get('location')).toBe(
+            'https://github.com/erden-sh/erden/releases/download/v9.9.9/install.sh',
+        );
+        await h.request('/download/v0.1.0/install.sh');
+        await h.request('/updates/stable/linux/x64/0.0.7');
+        await h.request('/updates/stable/linux/x64/0.2.0-rc.2');
+        const quiet = await h.request('/updates/canary');
+        expect(((await quiet.json()) as { version: string }).version).toBe('0.2.0-rc.10');
+        expect(h.env.DB.rows('SELECT channel, version FROM downloads ORDER BY version')).toEqual([
+            { channel: 'pinned', version: '0.1.0' },
+            { channel: 'pinned', version: 'other' },
+        ]);
+        expect(h.env.DB.rows('SELECT channel, version, hits FROM update_checks ORDER BY version')).toEqual([
+            { channel: 'stable', version: '0.2.0-rc.2', hits: 1 },
+            { channel: 'stable', version: 'other', hits: 1 },
+        ]);
+        for (const path of ['/download/v1234567.0.0/install.sh', '/updates/stable/linux/x64/1234567.0.0']) {
+            expect((await h.request(path)).status, path).not.toBe(302);
+        }
+    });
+
+    it('serves the last good release list when GitHub fails, and needs the token in production', async () => {
+        const h = harness();
+        await h.request('/install');
+        h.githubDown(true);
+        const fallback = await h.request('/install');
+        expect(fallback.headers.get('location')).toBe(
+            'https://github.com/erden-sh/erden/releases/download/v0.1.0/install.sh',
+        );
+        const cold = harness();
+        cold.githubDown(true);
+        await expect(cold.request('/install')).rejects.toThrow('GitHub answered 503');
+        const untokened = harness(RELEASES, { ENVIRONMENT: 'production' });
+        await expect(untokened.request('/install')).rejects.toThrow('GITHUB_TOKEN is required in production');
+        expect(untokened.calls).toEqual([]);
+        const tokened = harness(RELEASES, { ENVIRONMENT: 'production', GITHUB_TOKEN: 'test-token' });
+        expect((await tokened.request('/install')).status).toBe(302);
     });
 
     it('orders versions with a release above its own release candidates', () => {

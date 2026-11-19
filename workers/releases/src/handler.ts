@@ -11,12 +11,15 @@
 //                                           <file> is install.sh, install.ps1, SHA256SUMS, erden-<platform>.<ext> (the
 //                                           ref's version) or the exact erden-<version>-<platform>.<ext>
 //   /updates/<channel>/<os>/<arch>/<version>
-//                                           the channel's latest release for the CLI's update notice and erden upgrade
+//                                           the channel's latest release, for a CLI with telemetry on; counted
+//   /updates/<channel>                      the same answer, never counted: for a CLI with telemetry off
 //   /updates/report                         aggregate counts for the last 30 days; needs X-Report-Token (REPORT_TOKEN)
 //
-// Channels: stable is GitHub's latest release (never a prerelease); canary is the highest version among the stable
-// release and the v<x.y.z>-rc.<n> prereleases, so a canary install never lags stable. GitHub answers are cached at the
-// edge for CACHE_SECONDS. Requests with an X-Erden-CI header (Erden's own CI) are served but not counted.
+// The release index is the repository's published releases with a v<x.y.z> or v<x.y.z>-rc.<n> tag, from the GitHub API
+// (GITHUB_TOKEN is required in production), cached at the edge for CACHE_SECONDS. Every good answer is also kept in D1
+// (release_index) and served when GitHub fails. Stable is the highest v<x.y.z> release; canary is the highest of all,
+// so a canary install never lags stable. Only versions in the index are counted as themselves; any other is counted
+// as `other`. Requests with an X-Erden-CI header (Erden's own CI) are served but not counted.
 import {
     coarseCountry,
     json,
@@ -29,9 +32,11 @@ import {
 
 export interface Env {
     readonly DB: D1Database;
+    /** `production` in the deployed Worker: the GitHub token is then required. */
+    readonly ENVIRONMENT?: string;
     /** Secret; GET /updates/report is refused unless the request's X-Report-Token equals it. */
     readonly REPORT_TOKEN?: string;
-    /** Optional secret: a fine-grained, read-only GitHub token that raises the API rate limit. */
+    /** Secret, required in production: a fine-grained, read-only GitHub token (public repositories, no scopes). */
     readonly GITHUB_TOKEN?: string;
 }
 
@@ -58,15 +63,18 @@ export const PLATFORMS = Object.freeze({
 type Platform = keyof typeof PLATFORMS;
 const OPERATING_SYSTEMS = Object.freeze(['linux', 'darwin', 'win32']);
 const ARCHITECTURES = Object.freeze(['x64', 'arm64']);
-const VERSION_TEXT = '(?:0|[1-9]\\d{0,5})\\.(?:0|[1-9]\\d{0,5})\\.(?:0|[1-9]\\d{0,5})(?:-rc\\.(?:0|[1-9]\\d{0,5}))?';
+const NUMBER = '(?:0|[1-9]\\d{0,5})';
+const VERSION_TEXT = `${NUMBER}\\.${NUMBER}\\.${NUMBER}(?:-rc\\.${NUMBER})?`;
 const VERSION = new RegExp(`^${VERSION_TEXT}$`, 'u');
-const STABLE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/u;
-const CANARY_TAG = /^v(\d+)\.(\d+)\.(\d+)-rc\.(\d+)$/u;
+const STABLE_TAG = new RegExp(`^v${NUMBER}\\.${NUMBER}\\.${NUMBER}$`, 'u');
+const CANARY_TAG = new RegExp(`^v${NUMBER}\\.${NUMBER}\\.${NUMBER}-rc\\.${NUMBER}$`, 'u');
 const ARCHIVE = new RegExp(
     `^erden-(?:(${VERSION_TEXT})-)?(linux-x64|linux-arm64|darwin-arm64|win32-x64)\\.(tar\\.gz|zip)$`,
     'u',
 );
 const CLI_USER_AGENT = new RegExp(`^erden/${VERSION_TEXT} \\((linux|darwin|win32); (x64|arm64)\\)$`, 'u');
+/** What a version outside the release index is counted as. */
+export const OTHER_VERSION = 'other';
 
 /** The part of a release the Worker keeps. */
 export interface ReleaseSummary {
@@ -127,63 +135,66 @@ function summary(release: GitHubRelease): ReleaseSummary | null {
     };
 }
 
-async function github(path: string, env: Env, dependencies: Dependencies): Promise<unknown> {
-    const response = await dependencies.fetch(`https://api.github.com/repos/${REPOSITORY}${path}`, {
+/** The published releases, from GitHub; throws when GitHub cannot answer, or when production has no token. */
+export async function fetchReleaseIndex(env: Env, dependencies: Dependencies): Promise<ReleaseSummary[]> {
+    if (env.ENVIRONMENT === 'production' && (env.GITHUB_TOKEN === undefined || env.GITHUB_TOKEN === '')) {
+        throw new Error('GITHUB_TOKEN is required in production');
+    }
+    const response = await dependencies.fetch(`https://api.github.com/repos/${REPOSITORY}/releases?per_page=100`, {
         headers: {
             accept: 'application/vnd.github+json',
             'user-agent': USER_AGENT,
             'x-github-api-version': '2022-11-28',
-            ...(env.GITHUB_TOKEN === undefined ? {} : { authorization: `Bearer ${env.GITHUB_TOKEN}` }),
+            ...(env.GITHUB_TOKEN === undefined || env.GITHUB_TOKEN === ''
+                ? {}
+                : { authorization: `Bearer ${env.GITHUB_TOKEN}` }),
         },
     });
-    if (response.status === 404) {
-        return null;
-    }
     if (!response.ok) {
-        throw new Error(`GitHub answered ${String(response.status)} for ${path}`);
+        throw new Error(`GitHub answered ${String(response.status)}`);
     }
-    return (await response.json()) as unknown;
+    const releases = (await response.json()) as unknown;
+    if (!Array.isArray(releases)) {
+        throw new Error('GitHub answered something other than a release list');
+    }
+    return (releases as GitHubRelease[]).flatMap((release) => {
+        const kept = summary(release);
+        return kept === null ? [] : [kept];
+    });
 }
 
-/** The channel's current release from GitHub, or null when the channel has none yet. */
-export async function resolveFromGitHub(
-    channel: Channel,
-    env: Env,
-    dependencies: Dependencies,
-): Promise<ReleaseSummary | null> {
-    if (channel === 'stable') {
-        const latest = await github('/releases/latest', env, dependencies);
-        return latest === null ? null : summary(latest as GitHubRelease);
-    }
-    const releases = await github('/releases?per_page=50', env, dependencies);
-    let best: ReleaseSummary | null = null;
-    for (const release of Array.isArray(releases) ? (releases as GitHubRelease[]) : []) {
-        const candidate = summary(release);
-        if (candidate !== null && (best === null || compareVersions(candidate.version, best.version) > 0)) {
-            best = candidate;
-        }
-    }
-    return best;
+async function lastKnownGood(db: D1Database): Promise<ReleaseSummary[] | null> {
+    const row = await db.prepare('SELECT releases FROM release_index WHERE id = 1').first();
+    return typeof row?.releases === 'string' ? (JSON.parse(row.releases) as ReleaseSummary[]) : null;
 }
 
-/** The channel's release, from the edge cache when it is fresh. */
-export async function resolveChannel(
-    channel: Channel,
+/** The release index: from the edge cache when fresh, else from GitHub, else the last good answer kept in D1. */
+export async function releaseIndex(
     env: Env,
     context: WorkerContext,
     dependencies: Dependencies,
-): Promise<ReleaseSummary | null> {
-    const key = new Request(`https://erden-releases.internal/channels/${channel}.json`);
+): Promise<ReleaseSummary[]> {
+    const key = new Request('https://erden-releases.internal/release-index.json');
     const cached = await dependencies.cache?.match(key);
     if (cached !== undefined) {
-        return (await cached.json()) as ReleaseSummary | null;
+        return (await cached.json()) as ReleaseSummary[];
     }
-    const resolved = await resolveFromGitHub(channel, env, dependencies);
+    let index: ReleaseSummary[];
+    try {
+        index = await fetchReleaseIndex(env, dependencies);
+    } catch (cause) {
+        const kept = await lastKnownGood(env.DB);
+        if (kept === null) {
+            throw cause;
+        }
+        return kept;
+    }
+    const text = JSON.stringify(index);
     if (dependencies.cache !== undefined) {
         context.waitUntil(
             dependencies.cache.put(
                 key,
-                new Response(JSON.stringify(resolved), {
+                new Response(text, {
                     headers: {
                         'content-type': 'application/json',
                         'cache-control': `max-age=${String(CACHE_SECONDS)}`,
@@ -192,7 +203,35 @@ export async function resolveChannel(
             ),
         );
     }
-    return resolved;
+    context.waitUntil(
+        env.DB.prepare(
+            `INSERT INTO release_index (id, fetched_at, releases) VALUES (1, ?1, ?2)
+             ON CONFLICT (id) DO UPDATE SET fetched_at = ?1, releases = ?2`,
+        )
+            .bind(dependencies.now().toISOString(), text)
+            .run()
+            .catch(() => undefined),
+    );
+    return index;
+}
+
+/** The channel's release in the index, or null when the channel has none yet. */
+export function channelRelease(index: ReadonlyArray<ReleaseSummary>, channel: Channel): ReleaseSummary | null {
+    let best: ReleaseSummary | null = null;
+    for (const release of index) {
+        if (channel === 'stable' && !STABLE_TAG.test(release.tag)) {
+            continue;
+        }
+        if (best === null || compareVersions(release.version, best.version) > 0) {
+            best = release;
+        }
+    }
+    return best;
+}
+
+/** The version as counted: itself when a published release has it, else `other`. */
+export function countedVersion(index: ReadonlyArray<ReleaseSummary>, version: string): string {
+    return index.some((release) => release.version === version) ? version : OTHER_VERSION;
 }
 
 function assetUrl(tag: string, file: string): string {
@@ -213,7 +252,7 @@ export function clientOf(request: Request): { client: 'cli' | 'script' | 'other'
     if (cli !== null) {
         return { client: 'cli', os: cli[1] as string, arch: cli[2] as string };
     }
-    return { client: /^erden-install\/\d+$/u.test(agent) ? 'script' : 'other', os: '', arch: '' };
+    return { client: /^erden-install\/\d{1,3}$/u.test(agent) ? 'script' : 'other', os: '', arch: '' };
 }
 
 interface DownloadRecord {
@@ -284,17 +323,26 @@ async function handleDownload(
 ): Promise<Response> {
     let channel: Channel | 'pinned';
     let release: { tag: string; version: string; assets?: ReadonlyArray<string> };
+    let countAs: string;
     if (ref === 'stable' || ref === 'canary') {
-        const resolved = await resolveChannel(ref, env, context, dependencies);
+        const resolved = channelRelease(await releaseIndex(env, context, dependencies), ref);
         if (resolved === null) {
             return json({ error: `no ${ref} release yet` }, 404);
         }
         channel = ref;
         release = resolved;
+        countAs = resolved.version;
     } else if (STABLE_TAG.test(ref) || CANARY_TAG.test(ref)) {
-        // An exact tag needs no lookup: GitHub answers 404 for an asset the release does not have.
+        // GitHub answers 404 for an asset an exact tag does not have; the index only decides how it is counted.
         channel = 'pinned';
         release = { tag: ref, version: ref.slice(1) };
+        let index: ReadonlyArray<ReleaseSummary> = [];
+        try {
+            index = await releaseIndex(env, context, dependencies);
+        } catch {
+            index = [];
+        }
+        countAs = countedVersion(index, release.version);
     } else {
         return json({ error: 'not a channel or release tag' }, 404);
     }
@@ -307,7 +355,7 @@ async function handleDownload(
             recordDownload(
                 env.DB,
                 request,
-                { channel, version: release.version, asset: asset.asset, os: asset.os, arch: asset.arch },
+                { channel, version: countAs, asset: asset.asset, os: asset.os, arch: asset.arch },
                 utcDay(dependencies.now()),
             ).catch(() => undefined),
         );
@@ -322,30 +370,43 @@ async function handleUpdate(
     context: WorkerContext,
     dependencies: Dependencies,
 ): Promise<Response> {
-    const [channel, os, arch, version] = segments as [string, string, string, string];
+    const [channel, os, arch, version] = segments;
+    const recorded = segments.length === 4;
     if (
         !CHANNELS.includes(channel as Channel) ||
-        !OPERATING_SYSTEMS.includes(os) ||
-        !ARCHITECTURES.includes(arch) ||
-        !VERSION.test(version)
+        (recorded &&
+            (!OPERATING_SYSTEMS.includes(os as string) ||
+                !ARCHITECTURES.includes(arch as string) ||
+                !VERSION.test(version as string)))
     ) {
-        return json({ error: 'expected /updates/<stable|canary>/<os>/<arch>/<version>' }, 400);
+        return json(
+            { error: 'expected /updates/<stable|canary> or /updates/<stable|canary>/<os>/<arch>/<version>' },
+            400,
+        );
     }
-    if (counted(request)) {
+    const index = await releaseIndex(env, context, dependencies);
+    if (recorded && counted(request)) {
         context.waitUntil(
             env.DB.prepare(
                 `INSERT INTO update_checks (day, channel, os, arch, version, country, hits)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
                  ON CONFLICT (day, channel, os, arch, version, country) DO UPDATE SET hits = hits + 1`,
             )
-                .bind(utcDay(dependencies.now()), channel, os, arch, version, coarseCountry(request))
+                .bind(
+                    utcDay(dependencies.now()),
+                    channel as string,
+                    os as string,
+                    arch as string,
+                    countedVersion(index, version as string),
+                    coarseCountry(request),
+                )
                 .run()
                 .catch(() => undefined),
         );
     }
-    const release = await resolveChannel(channel as Channel, env, context, dependencies);
+    const release = channelRelease(index, channel as Channel);
     if (release === null) {
-        return json({ error: `no ${channel} release yet` }, 404);
+        return json({ error: `no ${channel as string} release yet` }, 404);
     }
     return json({
         schema: 'erden.cli-release/v1',
@@ -418,7 +479,7 @@ export async function handle(
             ? await handleReport(env, dependencies)
             : json({ error: 'unauthorized' }, 401);
     }
-    if (first === 'updates' && rest.length === 4) {
+    if (first === 'updates' && (rest.length === 1 || rest.length === 4)) {
         return await handleUpdate(request, rest, env, context, dependencies);
     }
     return json({ error: 'not found' }, 404);

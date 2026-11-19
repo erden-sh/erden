@@ -2,7 +2,7 @@
 // module, so the logic and its tests live in handler.ts.
 import { json, type WorkerContext } from '../../shared/http.js';
 
-import { handle, prune, type Env } from './handler.js';
+import { dailyMaintenance, handle, type Env } from './handler.js';
 
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
@@ -13,6 +13,6 @@ export default {
         }
     },
     scheduled(_controller: unknown, env: Env, context: WorkerContext): void {
-        context.waitUntil(prune(env.DB, new Date()));
+        context.waitUntil(dailyMaintenance(env.DB, new Date()));
     },
 };

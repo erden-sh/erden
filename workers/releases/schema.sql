@@ -11,7 +11,7 @@
 CREATE TABLE IF NOT EXISTS downloads (
     day      TEXT NOT NULL,              -- UTC day, YYYY-MM-DD
     channel  TEXT NOT NULL,              -- stable | canary | pinned (an exact version was asked for)
-    version  TEXT NOT NULL,              -- the release's version, for example 0.1.0 or 0.2.0-rc.1
+    version  TEXT NOT NULL,              -- a published release's version, for example 0.1.0, or other
     asset    TEXT NOT NULL,              -- archive | install.sh | install.ps1 | SHA256SUMS
     os       TEXT NOT NULL DEFAULT '',   -- linux | darwin | win32: an archive's platform, or the CLI's; '' if unknown
     arch     TEXT NOT NULL DEFAULT '',   -- x64 | arm64, the same way
@@ -21,14 +21,22 @@ CREATE TABLE IF NOT EXISTS downloads (
     PRIMARY KEY (day, channel, version, asset, os, arch, client, country)
 );
 
--- Update checks from the CLI (its once-a-day update notice and erden upgrade).
+-- Update checks from a CLI with telemetry on (/updates/<channel>/<os>/<arch>/<version>). /updates/<channel>, which a
+-- CLI with telemetry off asks, is never counted.
 CREATE TABLE IF NOT EXISTS update_checks (
     day      TEXT NOT NULL,              -- UTC day, YYYY-MM-DD
     channel  TEXT NOT NULL,              -- stable | canary
     os       TEXT NOT NULL,              -- linux | darwin | win32
     arch     TEXT NOT NULL,              -- x64 | arm64
-    version  TEXT NOT NULL,              -- the asking CLI's version
+    version  TEXT NOT NULL,              -- the asking CLI's version if a release has it, else other
     country  TEXT NOT NULL DEFAULT '',
     hits     INTEGER NOT NULL,
     PRIMARY KEY (day, channel, os, arch, version, country)
+);
+
+-- The last good release list from the GitHub API (one row), served when GitHub cannot answer. Public data only.
+CREATE TABLE IF NOT EXISTS release_index (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    fetched_at  TEXT NOT NULL,       -- when it was fetched, ISO 8601
+    releases    TEXT NOT NULL        -- JSON: tag, version, publishedAt and asset names of each published release
 );
