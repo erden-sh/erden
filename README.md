@@ -18,6 +18,8 @@ The local tools in this repository are Apache-2.0 (see [LICENSE](/LICENSE)). The
 | `packages/package-format/` | the package archive format                                               |
 | `reasoner/`                | the reasoner's Rust source, qualification, protocol and resolver         |
 | `shacl/`                   | the `erden-shacl` engine's Rust source, qualification and resolver       |
+| `workers/`                 | the Cloudflare Workers behind erden.sh/install, downloads and telemetry  |
+| `docs/`                    | public documentation, including what telemetry collects                  |
 
 The engine binaries are never committed. A release ships them inside the CLI archive; a checkout builds them from
 source.
@@ -32,11 +34,32 @@ another. It installs for the current user, with no administrator rights, to `~/.
 `erden` and `den` linked into `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\Erden\<version>\`).
 
 ```bash
-curl -fsSLO https://github.com/erden-sh/erden/releases/latest/download/install.sh
-sh install.sh
+curl -fsSL https://erden.sh/install | sh
 ```
 
-On Windows, download `install.ps1` from the same release and run `powershell -ExecutionPolicy Bypass -File install.ps1`.
+On Windows, in PowerShell:
+
+```powershell
+irm https://erden.sh/install.ps1 | iex
+```
+
+`https://erden.sh/install` and `https://erden.sh/install.ps1` redirect to the latest stable release's `install.sh` and
+`install.ps1` on GitHub; you can also download them from the [releases page](https://github.com/erden-sh/erden/releases)
+and run `sh install.sh` or `powershell -ExecutionPolicy Bypass -File install.ps1`.
+
+`erden upgrade` updates an install made this way to the latest release: it checks the new release's install script and
+archive against its `SHA256SUMS` and then runs that script. An install made by Homebrew or Scoop is updated by them
+instead. Canary releases (`v<x.y.z>-rc.<n>`, GitHub prereleases) are for trying what comes next: install one with
+`curl -fsSL https://erden.sh/install/canary | sh` (Windows: `irm https://erden.sh/install/canary.ps1 | iex`), or move
+an install to that channel with `erden upgrade --channel canary`, and back with `erden upgrade --channel stable`.
+
+### Telemetry
+
+Release builds send anonymous usage data: each command's name, outcome and duration, the version, channel, OS, CPU
+architecture and a random install ID, never paths, project names, IRIs, arguments or error messages. The first run says
+so and sends nothing. Turn it off with `erden telemetry disable`, `ERDEN_TELEMETRY_DISABLED=1` or `DO_NOT_TRACK=1`; it
+is always off in CI. Once a day, on a terminal, the CLI also checks for a newer release (`ERDEN_NO_UPDATE_NOTIFIER=1`
+turns that off). [docs/telemetry.md](/docs/telemetry.md) lists exactly what is sent and stored.
 
 ### Installing without network access
 
@@ -47,8 +70,9 @@ On Windows, download `install.ps1` from the same release and run `powershell -Ex
    `powershell -ExecutionPolicy Bypass -File install.ps1 -Archive erden-<version>-win32-x64.zip`.
 
 The script checks the archive's size and SHA-256 before it extracts anything, and makes no network request. The CLI
-makes none either, except to a registry you configure. It also checks each engine binary against its pinned size and
-SHA-256 before every use.
+makes none either beyond a registry you configure, telemetry and the daily update check, and with
+`DO_NOT_TRACK=1` it makes only the registry's. It also checks each engine binary against its pinned size and SHA-256
+before every use.
 
 ## Building from source
 
@@ -88,6 +112,9 @@ CLI install, and every test.
 3. **Release** (a `v<version>` tag on the merged pins): builds nothing. It fetches the archives of the mint run the
    pins name, refuses unless each one's size and SHA-256 are the pinned ones, and publishes them with `SHA256SUMS` and
    the install scripts, which check every archive's digest before they extract it.
+
+A canary is made the same way with the version `x.y.z-rc.n` and the tag `vx.y.z-rc.n`, which
+`.github/workflows/release-canary.yml` publishes as a GitHub prerelease that is never marked latest.
 
 GitHub keeps a run's artifacts for 90 days. The archive mint must follow its engine mint, and the tag its archive
 mint, within that time; otherwise run the mint again.
