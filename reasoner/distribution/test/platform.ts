@@ -8,7 +8,8 @@ export function testPlatformPackage(directory: URL): void {
     const manifest = JSON.parse(readFileSync(new URL('package.json', directory), 'utf8')) as { name: string };
     const metadata = JSON.parse(readFileSync(new URL('metadata.json', directory), 'utf8')) as {
         target: string;
-        binary: { path: string; bytes: number; sha256: string };
+        binary: { path: string; bytes: number | null; sha256: string | null };
+        knownAnswer: { responseBytes: number | null; responseSha256: string | null };
     };
     const record = JSON.parse(readFileSync(new URL('../../qualification/mint.json', import.meta.url), 'utf8')) as {
         targets: Record<string, { runs: Array<{ bytes: number; sha256: string }> }>;
@@ -16,12 +17,18 @@ export function testPlatformPackage(directory: URL): void {
     const path = metadata.target === 'x86_64-pc-windows-msvc' ? 'bin/erden-reasoner.exe' : 'bin/erden-reasoner';
     const binary = new URL(path, directory);
     describe(`${manifest.name} artifact`, () => {
-        it('pins both identical builds from the mint record', () => {
+        const minted = record.targets[metadata.target];
+        it.runIf(minted !== undefined)('pins both identical builds from the mint record', () => {
             expect(metadata.binary.path).toBe(path);
-            expect(record.targets[metadata.target]?.runs.map(({ bytes, sha256 }) => ({ bytes, sha256 }))).toEqual([
+            expect(minted?.runs.map(({ bytes, sha256 }) => ({ bytes, sha256 }))).toEqual([
                 { bytes: metadata.binary.bytes, sha256: metadata.binary.sha256 },
                 { bytes: metadata.binary.bytes, sha256: metadata.binary.sha256 },
             ]);
+        });
+        // A platform added after the version was minted has no build in the record until the next mint.
+        it.runIf(minted === undefined)('carries null pins until a mint builds it', () => {
+            expect(metadata.binary).toEqual({ path, bytes: null, sha256: null });
+            expect(metadata.knownAnswer).toMatchObject({ responseBytes: null, responseSha256: null });
         });
         it.skipIf(!existsSync(binary))('holds the pinned executable when installed', () => {
             const bytes = readFileSync(binary);

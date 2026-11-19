@@ -20,7 +20,9 @@
     "optionalDependencies": {
         "@erden/reasoner-darwin-arm64": "workspace:0.3.0+purrdf.0.12.0.dfb1df7",
         "@erden/reasoner-linux-arm64-gnu": "workspace:0.3.0+purrdf.0.12.0.dfb1df7",
+        "@erden/reasoner-linux-arm64-musl": "workspace:0.3.0+purrdf.0.12.0.dfb1df7",
         "@erden/reasoner-linux-x64-gnu": "workspace:0.3.0+purrdf.0.12.0.dfb1df7",
+        "@erden/reasoner-linux-x64-musl": "workspace:0.3.0+purrdf.0.12.0.dfb1df7",
         "@erden/reasoner-win32-x64-msvc": "workspace:0.3.0+purrdf.0.12.0.dfb1df7"
     },
     "engines": {

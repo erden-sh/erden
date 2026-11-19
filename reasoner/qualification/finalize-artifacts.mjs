@@ -1,19 +1,23 @@
-// The reasoner mint: from one reasoner-build workflow run (both clean builds of each of the four targets, and the
+// The reasoner mint: from one reasoner-build workflow run (both clean builds of each of the six targets, and the
 // cross-platform determinism comparison), writes everything that pins the release: each platform package's
 // package.json and metadata.json, the resolver's anchors (reasoner/distribution/src/artifacts.js), the resolver's
-// optional dependencies on the four packages, and the mint record (reasoner/qualification/mint.json). Every input is
+// optional dependencies on the six packages, and the mint record (reasoner/qualification/mint.json). Every input is
 // checked first: both builds of each target identical, the uploaded binary the recorded one, the qualified lock and
-// toolchain, the pinned builder image on Linux, the adapter crate this checkout's, one source commit for all four, and
-// the comparison identical over exactly the minted binaries. The binaries are never committed (reasoner/*/bin/ is
-// ignored); the mint copies them into the packages for packing and qualification only.
+// toolchain, the pinned builder image on Linux (the Alpine one for musl), the adapter crate this checkout's, one source
+// commit for all six, and the comparison identical over exactly the minted binaries. The binaries are never committed
+// (reasoner/*/bin/ is ignored); the mint copies them into the packages for packing and qualification only.
 //
 //   node reasoner/qualification/finalize-artifacts.mjs --artifacts <dir with reasoner-<target>/ folders>
 //        --determinism <dir with comparison.json> --run-id <id>
 //   node reasoner/qualification/finalize-artifacts.mjs --check
+//   node reasoner/qualification/finalize-artifacts.mjs --matches-source
 //
 // `--check` refuses unless the committed packages, anchors, optional dependencies and record are exactly what the
 // record describes, and no binary is committed; it verifies each binary that is present. Before the first mint of a
-// version (no record) it checks that every anchor is still unpinned.
+// version (no record) it checks that every anchor is still unpinned. A platform added after the version was minted
+// (the record has no build of its target) is committed unpinned: its anchors and metadata must carry null pins, and the
+// determinism comparison covers the minted binaries only. `--matches-source` refuses while any platform is unminted,
+// so the next release mints all six again.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -21,7 +25,14 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { PACKAGE_VERSION, REASONER_TOOL } from '../distribution/src/index.js';
-import { LINUX_BUILDER_IMAGE, RUST_TOOLCHAIN, executableName, rustflagsRecordOf } from './verify-binary-reproducible.mjs';
+import {
+    LINUX_BUILDER_IMAGE,
+    LINUX_MUSL_BUILDER_IMAGE,
+    RUST_TOOLCHAIN,
+    builderImageOf,
+    executableName,
+    rustflagsRecordOf,
+} from './verify-binary-reproducible.mjs';
 
 /**
  * The cross-platform comparison results a mint accepts: `differs-on-native` means only the Windows or macOS answers
@@ -73,6 +84,26 @@ export const PLATFORMS = Object.freeze([
         runtime: { os: 'win32', cpu: 'x64' },
         target: 'x86_64-pc-windows-msvc',
         runner: 'windows-2025',
+    },
+    // The static musl executables, for Alpine and other musl distributions. They come after the glibc packages, so a
+    // lookup by operating system and CPU alone (build-from-source.mjs) still finds the glibc one first.
+    {
+        key: 'linux:x64:musl',
+        directory: 'linux-x64-musl',
+        packageName: '@erden/reasoner-linux-x64-musl',
+        description: 'Erden reasoner for Linux x64 (musl)',
+        runtime: { os: 'linux', cpu: 'x64', libc: 'musl' },
+        target: 'x86_64-unknown-linux-musl',
+        runner: 'ubuntu-24.04',
+    },
+    {
+        key: 'linux:arm64:musl',
+        directory: 'linux-arm64-musl',
+        packageName: '@erden/reasoner-linux-arm64-musl',
+        description: 'Erden reasoner for Linux arm64 (musl)',
+        runtime: { os: 'linux', cpu: 'arm64', libc: 'musl' },
+        target: 'aarch64-unknown-linux-musl',
+        runner: 'ubuntu-24.04-arm',
     },
 ]);
 
@@ -179,7 +210,7 @@ export function writePlatformPackage(entry, outputReasoner = reasoner) {
     writeFileSync(join(directory, 'test/index.test.ts'), "import { testPlatformPackage } from '../../distribution/test/platform.js';\n\ntestPlatformPackage(new URL('../', import.meta.url));\n");
 }
 
-/** The resolver's manifest with optional dependencies on the four released platform packages. */
+/** The resolver's manifest with optional dependencies on every platform package, minted or not. */
 export function distributionManifestOf(current) {
     const manifest = { ...current };
     delete manifest.optionalDependencies;
@@ -215,13 +246,14 @@ export function assertBuildRecord(platform, record, binaryBytes, adapterTree) {
     }
     if (JSON.stringify(record.toolchain) !== JSON.stringify(RUST_TOOLCHAIN)) fail(`${platform.target}: not the qualified toolchain`);
     if (record.cargoLockDigest !== sha256(readFileSync(join(reasoner, 'Cargo.lock')))) fail(`${platform.target}: not this checkout's Cargo.lock`);
-    if (platform.runtime.os === 'linux' && record.builderImage !== LINUX_BUILDER_IMAGE) fail(`${platform.target}: not the pinned builder image`);
+    if (platform.runtime.os === 'linux' && record.builderImage !== builderImageOf(platform.target)) fail(`${platform.target}: not the pinned builder image`);
     if (record.adapterCrateSourceTree !== adapterTree) fail(`${platform.target}: built from an adapter crate other than this checkout's`);
     if (record.knownAnswer?.fixture !== 'subclass-type' || !Number.isSafeInteger(record.knownAnswer.responseBytes)) {
         fail(`${platform.target}: no known answer`);
     }
 }
 
+/** Each platform with the pins of its build in `targets` (a mint record's), or null pins when it has none. */
 function entriesOf(targets) {
     return PLATFORMS.map((platform) => {
         const record = targets?.[platform.target];
@@ -260,11 +292,19 @@ function check() {
         }
     }
     const distribution = readFileSync(DISTRIBUTION_MANIFEST, 'utf8');
-    if (distribution !== distributionManifestOf(JSON.parse(distribution))) fail('the resolver does not depend on exactly the four platform packages');
+    if (distribution !== distributionManifestOf(JSON.parse(distribution))) fail('the resolver does not depend on exactly the six platform packages');
+    const known = new Set(PLATFORMS.map((platform) => platform.target));
+    const stray = Object.keys(record.targets ?? {}).filter((target) => !known.has(target));
+    if (stray.length > 0) fail(`the record has builds of targets no platform package ships: ${stray.join(', ')}`);
+    // A platform added after this version was minted has no build in the record and stays unpinned (entriesOf), so the
+    // comparison covers exactly the minted binaries.
+    const minted = entries.filter((entry) => entry.sha256 !== null);
+    if (minted.length === 0) fail('the mint record holds no build');
     const determinism = record.crossPlatformDeterminism;
     if (
         !ACCEPTED_COMPARISONS.has(determinism?.result) ||
-        JSON.stringify(Object.values(determinism.executables).sort()) !== JSON.stringify(entries.map((entry) => entry.sha256).sort())
+        JSON.stringify(Object.keys(determinism.executables).sort()) !== JSON.stringify(minted.map((entry) => entry.target).sort()) ||
+        JSON.stringify(Object.values(determinism.executables).sort()) !== JSON.stringify(minted.map((entry) => entry.sha256).sort())
     ) {
         fail('the record lacks an identical cross-platform determinism comparison of the minted binaries');
     }
@@ -273,13 +313,18 @@ function check() {
     }
     const committed = PLATFORMS.map((platform) => `reasoner/${platform.directory}/bin`);
     if (git('ls-files', '--', ...committed) !== '') fail('a binary is committed; the packages carry only their pins');
-    console.log(`reasoner ${PACKAGE_VERSION} packages, anchors and record agree with the mint`);
+    const unminted = entries.filter((entry) => entry.sha256 === null).map((entry) => entry.directory);
+    console.log(
+        `reasoner ${PACKAGE_VERSION} packages, anchors and record agree with the mint` +
+            (unminted.length === 0 ? '' : `; not minted yet, so unpinned: ${unminted.join(', ')}`),
+    );
 }
 
 /**
- * Whether the committed pins are this checkout's build, so a release can reuse the minted binaries: a mint record, the
- * adapter crate and lock it was built from, and every target's flags (which live in the qualification scripts, not the
- * crate). Refuses otherwise, which means the reasoner must be minted again.
+ * Whether the committed pins are this checkout's build, so a release can reuse the minted binaries: a mint record with
+ * a build of every platform, the adapter crate and lock it was built from, and every target's flags (which live in the
+ * qualification scripts, not the crate). Refuses otherwise, which means the reasoner must be minted again: a platform
+ * added since the last mint is minted together with the others, from one run.
  */
 function matchesSource() {
     if (!existsSync(MINT_RECORD)) fail(`reasoner ${PACKAGE_VERSION} is not minted yet`);
@@ -287,6 +332,10 @@ function matchesSource() {
     if (record.tool?.version !== PACKAGE_VERSION) fail('the mint record is for another version');
     if (git('rev-parse', 'HEAD:reasoner/erden-reasoner') !== record.adapterCrateSourceTree || sha256(readFileSync(join(reasoner, 'Cargo.lock'))) !== record.cargoLockDigest) {
         fail('the committed adapter crate or lock is not the minted source');
+    }
+    const unminted = PLATFORMS.filter((platform) => record.targets?.[platform.target] === undefined);
+    if (unminted.length > 0) {
+        fail(`${unminted.map((platform) => platform.target).join(', ')} not minted yet; the next mint builds all ${String(PLATFORMS.length)} targets`);
     }
     for (const platform of PLATFORMS) {
         if (record.targets[platform.target]?.rustflags !== rustflagsRecordOf(platform.target)) {
@@ -299,12 +348,13 @@ function matchesSource() {
 function mint(values) {
     const comparison = JSON.parse(readFileSync(join(resolve(values.determinism), 'comparison.json'), 'utf8'));
     if (!ACCEPTED_COMPARISONS.has(comparison.result) || Object.keys(comparison.platforms ?? {}).length !== PLATFORMS.length) {
-        fail('the cross-platform determinism comparison is not identical on all four platforms (or on both Linux targets)');
+        fail(`the cross-platform determinism comparison is not identical on all ${String(PLATFORMS.length)} platforms (or not on the Linux ones)`);
     }
     const adapterTree = git('rev-parse', 'HEAD:reasoner/erden-reasoner');
     const targets = {};
     for (const platform of PLATFORMS) {
         const folder = join(resolve(values.artifacts), `reasoner-${platform.target}`);
+        if (!existsSync(join(folder, `${platform.target}.json`))) fail(`${platform.target}: no build; a mint covers all ${String(PLATFORMS.length)} targets`);
         const record = JSON.parse(readFileSync(join(folder, `${platform.target}.json`), 'utf8'));
         const binary = join(folder, platform.target, executableName(platform.target));
         const bytes = readFileSync(binary);
@@ -320,7 +370,7 @@ function mint(values) {
         targets[platform.target] = { ...record, runner: platform.runner, workflowRunId: Number(values['run-id']) };
     }
     const commits = new Set(Object.values(targets).map((record) => record.qualificationSourceCommit));
-    if (commits.size !== 1) fail('the four targets were built from different commits');
+    if (commits.size !== 1) fail(`the ${String(PLATFORMS.length)} targets were built from different commits`);
     const entries = entriesOf(targets);
     for (const entry of entries) {
         writePlatformPackage(entry);
@@ -341,6 +391,7 @@ function mint(values) {
                 cargoLockDigest: sha256(readFileSync(join(reasoner, 'Cargo.lock'))),
                 toolchain: RUST_TOOLCHAIN,
                 linuxBuilderImage: LINUX_BUILDER_IMAGE,
+                linuxMuslBuilderImage: LINUX_MUSL_BUILDER_IMAGE,
                 targets,
                 crossPlatformDeterminism: {
                     result: comparison.result,

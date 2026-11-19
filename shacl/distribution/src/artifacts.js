@@ -1,5 +1,6 @@
 // Written by shacl/qualification/finalize-artifacts.mjs from the shacl-build run recorded in
-// shacl/qualification/binary-reproducibility.json. Do not edit by hand.
+// shacl/qualification/binary-reproducibility.json. Do not edit by hand. A platform whose pins are null has no
+// released binary.
 export const PACKAGE_VERSION = '0.1.0+purrdf.3.0.1';
 export const ENGINE_DIGEST = 'sha256:026b0ef70f4bd68cbe0fff535b8287eb804825c057f46cc116ae1f2087b427cc';
 export const KNOWN_ANSWER_FIXTURE_DIGEST = 'sha256:998bf25c3ec295a5dc8e8863846ca335ac636f2b1edf8abfb95b57ec88c883d8';
@@ -47,5 +48,27 @@ export const QUALIFIED_ARTIFACTS = Object.freeze({
         sha256: 'sha256:43eb5fc2fa27572fa7e5f2edae28d1a6348527e207b786b38d2f922207978135',
         responseBytes: 2202,
         responseSha256: 'sha256:8dbe07ceafb1d06b3726dab240a9fd63080f2e1791d154039e48337058b6cde3',
+    }),
+    'linux:x64:musl': Object.freeze({
+        packageName: '@erden/shacl-linux-x64-musl',
+        description: 'Qualified Erden SHACL engine for Linux x64 (musl)',
+        runtime: Object.freeze({ 'os': 'linux', 'cpu': 'x64', 'libc': 'musl' }),
+        target: 'x86_64-unknown-linux-musl',
+        binaryPath: 'bin/erden-shacl',
+        bytes: null,
+        sha256: null,
+        responseBytes: null,
+        responseSha256: null,
+    }),
+    'linux:arm64:musl': Object.freeze({
+        packageName: '@erden/shacl-linux-arm64-musl',
+        description: 'Qualified Erden SHACL engine for Linux arm64 (musl)',
+        runtime: Object.freeze({ 'os': 'linux', 'cpu': 'arm64', 'libc': 'musl' }),
+        target: 'aarch64-unknown-linux-musl',
+        binaryPath: 'bin/erden-shacl',
+        bytes: null,
+        sha256: null,
+        responseBytes: null,
+        responseSha256: null,
     }),
 });

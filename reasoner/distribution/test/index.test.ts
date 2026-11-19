@@ -21,6 +21,7 @@ import {
     BundledReasonerError,
     ERROR_CODES,
     inspectBundledReasoner,
+    libcOfReport,
     PACKAGE_VERSION,
     QUALIFIED_REASONER_ARTIFACTS,
     REASONER_RELEASED,
@@ -217,8 +218,17 @@ describe('real npm package artifacts', () => {
         const resolver = JSON.parse(readFileSync(resolve(packed.distribution.directory, 'package.json'), 'utf8')) as {
             optionalDependencies: Record<string, string>;
         };
+        // Every anchored platform, the ones not minted yet included.
         expect(resolver.optionalDependencies).toEqual(
-            Object.fromEntries(Object.values(platformPackages).map((name) => [name, PACKAGE_VERSION])),
+            Object.fromEntries(
+                Object.values(QUALIFIED_REASONER_ARTIFACTS)
+                    .map(({ packageName }) => packageName)
+                    .sort()
+                    .map((name) => [name, PACKAGE_VERSION]),
+            ),
+        );
+        expect(Object.keys(resolver.optionalDependencies)).toEqual(
+            expect.arrayContaining(Object.values(platformPackages)),
         );
     });
 
@@ -319,7 +329,7 @@ describe('fail-closed resolution from real extracted tarballs', () => {
         expectedError(
             () =>
                 resolveBundledReasoner({
-                    runtime: { platform: 'linux', arch: 'x64', libc: 'musl' },
+                    runtime: { platform: 'linux', arch: 'x64', libc: 'unknown' },
                     locatePackage: unreachable,
                 }),
             ERROR_CODES.unsupportedLibc,
@@ -344,7 +354,9 @@ describe('fail-closed resolution from real extracted tarballs', () => {
         expect([...supported].sort()).toEqual([
             'darwin arm64',
             'linux arm64 (glibc)',
+            'linux arm64 (musl)',
             'linux x64 (glibc)',
+            'linux x64 (musl)',
             'win32 x64',
         ]);
         const refused = [
@@ -371,27 +383,30 @@ describe('fail-closed resolution from real extracted tarballs', () => {
         expect(SUPPORTED_PLATFORMS).toEqual(supported);
     });
 
-    it.each(['x64', 'arm64'])('names the refused Linux %s runtime when its C library is not glibc', (arch) => {
-        // detectRuntime reports every non-glibc Linux (musl included) as libc 'unknown'.
-        let error: unknown;
-        try {
-            resolveBundledReasoner({
-                runtime: { platform: 'linux', arch, libc: 'unknown' },
-                locatePackage: () => {
-                    throw new Error('locator must not run');
-                },
-            });
-        } catch (caught) {
-            error = caught;
-        }
-        expect(error).toBeInstanceOf(BundledReasonerError);
-        const refusal = error as BundledReasonerError;
-        expect(refusal.code).toBe(ERROR_CODES.unsupportedLibc);
-        expect(refusal.message).toBe(
-            `No qualified bundled reasoner exists for linux ${arch} without glibc; supported: ${SUPPORTED_PLATFORMS.join(', ')}`,
-        );
-        expect(refusal.details.supported).toEqual(SUPPORTED_PLATFORMS);
-    });
+    it.each(['x64', 'arm64'])(
+        'names the refused Linux %s runtime when its C library is neither glibc nor musl',
+        (arch) => {
+            // detectRuntime reports every other C library as libc 'unknown'.
+            let error: unknown;
+            try {
+                resolveBundledReasoner({
+                    runtime: { platform: 'linux', arch, libc: 'unknown' },
+                    locatePackage: () => {
+                        throw new Error('locator must not run');
+                    },
+                });
+            } catch (caught) {
+                error = caught;
+            }
+            expect(error).toBeInstanceOf(BundledReasonerError);
+            const refusal = error as BundledReasonerError;
+            expect(refusal.code).toBe(ERROR_CODES.unsupportedLibc);
+            expect(refusal.message).toBe(
+                `No qualified bundled reasoner exists for linux ${arch} without glibc or musl; supported: ${SUPPORTED_PLATFORMS.join(', ')}`,
+            );
+            expect(refusal.details.supported).toEqual(SUPPORTED_PLATFORMS);
+        },
+    );
 
     it.skipIf(UNRELEASED)(
         'carries the supported platforms into an unavailable inspection only for a refused runtime',
@@ -921,4 +936,87 @@ describe.skipIf(REASONER_RELEASED)('an unreleased version runs a reasoner built 
             selfTest: { status: 'passed' },
         });
     });
+});
+
+describe('musl Linux', () => {
+    it('reads the C library from the process report: glibc by version, musl by its loaded loader or library', () => {
+        expect(
+            libcOfReport({
+                header: { glibcVersionRuntime: '2.39' },
+                sharedObjects: ['/lib/x86_64-linux-gnu/libc.so.6'],
+            }),
+        ).toBe('glibc');
+        expect(libcOfReport({ header: {}, sharedObjects: ['/usr/local/bin/node', '/lib/ld-musl-x86_64.so.1'] })).toBe(
+            'musl',
+        );
+        expect(libcOfReport({ header: {}, sharedObjects: ['/usr/lib/libc.musl-aarch64.so.1'] })).toBe('musl');
+        for (const report of [
+            { header: {}, sharedObjects: ['/usr/local/bin/node', '/lib/libc.so'] },
+            { header: {}, sharedObjects: ['/opt/ld-musl-notes/libfoo.so'] },
+            { header: { glibcVersionRuntime: 2 } },
+            {},
+            undefined,
+        ]) {
+            expect(libcOfReport(report)).toBe('unknown');
+        }
+    });
+
+    it.each(['x64', 'arm64'] as const)('selects the linux %s musl package like a glibc one', (arch) => {
+        const runtime = { platform: 'linux', arch, libc: 'musl' } as const;
+        const expected = QUALIFIED_REASONER_ARTIFACTS[`linux:${arch}:musl`];
+        expect(expected).toMatchObject({
+            packageName: `@erden/reasoner-linux-${arch}-musl`,
+            runtime: { os: 'linux', cpu: arch, libc: 'musl' },
+            target: `${arch === 'x64' ? 'x86_64' : 'aarch64'}-unknown-linux-musl`,
+        });
+        const located: string[] = [];
+        const inspected = inspectBundledReasoner({
+            runtime,
+            locatePackage: (name) => {
+                located.push(name);
+                return undefined;
+            },
+            sourceBuild: resolve(temporaryRoot, 'no-such-build', 'erden-reasoner'),
+        });
+        if (expected?.sha256 === null) {
+            // Not minted yet: the platform runs a source build, like an unreleased version, and names its platform.
+            expect(located).toEqual([]);
+            expect(inspected).toMatchObject({
+                expectedPlatformPackage: SOURCE_BUILD,
+                failureCode: ERROR_CODES.sourceBuildMissing,
+            });
+        } else {
+            expect(located).toEqual([`@erden/reasoner-linux-${arch}-musl`]);
+            expect(inspected).toMatchObject({
+                expectedPlatformPackage: `@erden/reasoner-linux-${arch}-musl`,
+                failureCode: ERROR_CODES.packageMissing,
+            });
+        }
+    });
+
+    const unminted = Object.values(QUALIFIED_REASONER_ARTIFACTS).filter((artifact) => artifact.sha256 === null);
+    it.runIf(REASONER_RELEASED && unminted.length > 0)(
+        'keeps a minted version released while a platform added after the mint is unpinned',
+        () => {
+            for (const artifact of unminted) {
+                const runtime = {
+                    platform: artifact.runtime.os,
+                    arch: artifact.runtime.cpu,
+                    ...(artifact.runtime.libc === undefined ? {} : { libc: artifact.runtime.libc }),
+                };
+                const absent = resolve(temporaryRoot, 'no-such-build', 'erden-reasoner');
+                let error: unknown;
+                try {
+                    resolveBundledReasoner({ runtime, sourceBuild: absent });
+                } catch (caught) {
+                    error = caught;
+                }
+                expect(error).toBeInstanceOf(BundledReasonerError);
+                expect((error as BundledReasonerError).code).toBe(ERROR_CODES.sourceBuildMissing);
+                expect((error as BundledReasonerError).message).toContain(
+                    `no released binary for ${artifact.runtime.os} ${artifact.runtime.cpu} (${String(artifact.runtime.libc)})`,
+                );
+            }
+        },
+    );
 });

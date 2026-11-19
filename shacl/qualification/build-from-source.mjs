@@ -8,7 +8,8 @@
 //
 // One clean build with the mint's plan and directory layout (verify-binary-reproducible.mjs, its build A): the
 // digest-pinned builder image on Linux, rustup 1.98.0 on Windows and macOS, `cargo build --release --locked`, the
-// recorded SOURCE_DATE_EPOCH and path remaps.
+// recorded SOURCE_DATE_EPOCH and path remaps. On Linux a crate other than the minted one is refused before building:
+// its bytes cannot be the pin until the engine is minted again.
 // An installed binary that already matches its pin is kept without rebuilding.
 import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
@@ -67,6 +68,17 @@ function main() {
     const commit = values.commit ?? git('rev-parse', 'HEAD');
     const changed = git('diff', '--name-only', commit, '--', 'shacl/erden-shacl', 'shacl/Cargo.toml', 'shacl/Cargo.lock');
     if (changed !== '') throw new Error(`The working crate differs from ${commit}; commit it first:\n${changed}`);
+    // A crate changed since the mint cannot build the pinned bytes. On Linux, where a build must be the pin, that is
+    // refused before building: the engine is minted again (release.yml) and the new pins land with the change.
+    const record = JSON.parse(readFileSync(join(shacl, 'qualification/binary-reproducibility.json'), 'utf8'));
+    const crate = git('rev-parse', `${commit}:shacl/erden-shacl`);
+    if (platform.runtime.os === 'linux' && crate !== record.crateSourceTree) {
+        throw new Error(
+            `The erden-shacl crate at ${commit} (tree ${crate}) is not the minted one (${String(record.crateSourceTree)}), so ` +
+                'its build cannot be the pinned binary; it is not built or installed. Mint the engine again (release.yml) ' +
+                'and commit the new pins with the change.',
+        );
+    }
     const temporary = mkdtempSync(join(realpathSync(tmpdir()), BUILD_LAYOUT.temporaryPrefix));
     try {
         const source = exportSource(repository, commit, temporary, BUILD_LAYOUT.a.source);
@@ -81,7 +93,6 @@ function main() {
             // Linux builds in the pinned builder image, so a difference is a defect. A native build uses the runner
             // image's linker, which no pin covers: the minted binary is fetched instead (scripts/lib/fetch-minted-engine.mjs).
             if (platform.runtime.os === 'linux') throw new Error(`${reason}; it is not installed`);
-            const record = JSON.parse(readFileSync(join(shacl, 'qualification/binary-reproducibility.json'), 'utf8'));
             installMintedBinary({
                 artifact: `shacl-${platform.target}`,
                 runId: record.targets[platform.target]?.workflowRunId ?? record.workflowRunId,

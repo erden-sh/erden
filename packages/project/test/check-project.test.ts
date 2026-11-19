@@ -249,7 +249,7 @@ describe('CheckProject deterministic orchestration', () => {
         expect(rendered).toContain(`No qualified bundled reasoner exists for this runtime (${process.platform}/s390x`);
         expect(rendered).toContain('UNSUPPORTED_PLATFORM');
         expect(rendered).toContain(
-            'Supported platforms: linux x64 (glibc), linux arm64 (glibc), darwin arm64, win32 x64. Run Erden on one of them.',
+            'Supported platforms: linux x64 (glibc), linux arm64 (glibc), darwin arm64, win32 x64, linux x64 (musl), linux arm64 (musl). Run Erden on one of them.',
         );
         expect(rendered).not.toContain('Repair the local Erden runtime');
     });

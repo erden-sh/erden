@@ -8,7 +8,9 @@ import { afterEach, describe, expect, test } from 'vitest';
 
 import {
   LINUX_BUILDER_IMAGE,
+  LINUX_MUSL_BUILDER_IMAGE,
   REPRODUCIBLE_TARGETS,
+  builderImageOf,
   nativeBuildEnvironment,
   planBuild,
   rustflagsRecordOf,
@@ -27,9 +29,29 @@ describe('Unix reproducible build plan', () => {
     expect([...REPRODUCIBLE_TARGETS].sort()).toEqual([
       'aarch64-apple-darwin',
       'aarch64-unknown-linux-gnu',
+      'aarch64-unknown-linux-musl',
       'x86_64-pc-windows-msvc',
       'x86_64-unknown-linux-gnu',
+      'x86_64-unknown-linux-musl',
     ]);
+  });
+
+  test.each([
+    ['x86_64-unknown-linux-musl', 'x64', 'linux/amd64'],
+    ['aarch64-unknown-linux-musl', 'arm64', 'linux/arm64'],
+  ] as const)('Linux musl %s builds in the pinned Alpine image with the glibc builds\' flags', (target, arch, dockerPlatform) => {
+    const gnu = planBuild(target.replace('-musl', '-gnu'), { platform: 'linux', arch });
+    const musl = planBuild(target, { platform: 'linux', arch });
+    expect(musl.kind).toBe('docker');
+    if (musl.kind !== 'docker' || gnu.kind !== 'docker') return;
+    expect(musl.image).toBe(LINUX_MUSL_BUILDER_IMAGE);
+    expect(musl.image).not.toBe(LINUX_BUILDER_IMAGE);
+    expect(builderImageOf(target)).toBe(LINUX_MUSL_BUILDER_IMAGE);
+    expect(builderImageOf(target.replace('-musl', '-gnu'))).toBe(LINUX_BUILDER_IMAGE);
+    expect(musl.dockerPlatform).toBe(dockerPlatform);
+    expect(musl.rustflagsRecord).toBe(gnu.rustflagsRecord);
+    expect(musl.command).toBe(gnu.command.replace(target.replace('-musl', '-gnu'), target));
+    expect(musl.binaryRelativePath).toBe(`${target}/release/erden-reasoner`);
   });
 
   test('Linux x64 repeats the accepted container build exactly', () => {
@@ -94,6 +116,8 @@ describe('Unix reproducible build plan', () => {
     const hosts = {
       'x86_64-unknown-linux-gnu': { platform: 'linux', arch: 'x64' },
       'aarch64-unknown-linux-gnu': { platform: 'linux', arch: 'arm64' },
+      'x86_64-unknown-linux-musl': { platform: 'linux', arch: 'x64' },
+      'aarch64-unknown-linux-musl': { platform: 'linux', arch: 'arm64' },
       'x86_64-pc-windows-msvc': { platform: 'win32', arch: 'x64' },
       'aarch64-apple-darwin': { platform: 'darwin', arch: 'arm64' },
     } as const;
@@ -108,6 +132,9 @@ describe('Unix reproducible build plan', () => {
   test('refuses to build a target on a host that would need emulation or cross-linking', () => {
     expect(() => planBuild('aarch64-unknown-linux-gnu', { platform: 'linux', arch: 'x64' })).toThrow(
       /aarch64-unknown-linux-gnu builds only on a native linux arm64 host/u,
+    );
+    expect(() => planBuild('aarch64-unknown-linux-musl', { platform: 'linux', arch: 'x64' })).toThrow(
+      /aarch64-unknown-linux-musl builds only on a native linux arm64 host/u,
     );
     expect(() => planBuild('aarch64-apple-darwin', { platform: 'linux', arch: 'arm64' })).toThrow(/native darwin arm64/u);
     expect(() => planBuild('x86_64-apple-darwin', { platform: 'darwin', arch: 'x64' })).toThrow(

@@ -37,7 +37,9 @@ const currentPackages = new Map([
     ['shacl/darwin-arm64', '@erden/shacl-darwin-arm64'],
     ['shacl/distribution', '@erden/shacl-distribution'],
     ['shacl/linux-arm64-gnu', '@erden/shacl-linux-arm64-gnu'],
+    ['shacl/linux-arm64-musl', '@erden/shacl-linux-arm64-musl'],
     ['shacl/linux-x64-gnu', '@erden/shacl-linux-x64-gnu'],
+    ['shacl/linux-x64-musl', '@erden/shacl-linux-x64-musl'],
     ['shacl/win32-x64-msvc', '@erden/shacl-win32-x64-msvc'],
 ]);
 
@@ -97,13 +99,17 @@ const allowedProductionDependencies = new Map([
         new Set([
             '@erden/shacl-darwin-arm64',
             '@erden/shacl-linux-arm64-gnu',
+            '@erden/shacl-linux-arm64-musl',
             '@erden/shacl-linux-x64-gnu',
+            '@erden/shacl-linux-x64-musl',
             '@erden/shacl-win32-x64-msvc',
         ]),
     ],
     ['@erden/shacl-darwin-arm64', new Set()],
     ['@erden/shacl-linux-arm64-gnu', new Set()],
+    ['@erden/shacl-linux-arm64-musl', new Set()],
     ['@erden/shacl-linux-x64-gnu', new Set()],
+    ['@erden/shacl-linux-x64-musl', new Set()],
     ['@erden/shacl-win32-x64-msvc', new Set()],
 ]);
 
@@ -151,6 +157,32 @@ const platformPackages = new Map([
         },
     ],
     [
+        'shacl/linux-arm64-musl',
+        {
+            name: '@erden/shacl-linux-arm64-musl',
+            tool: 'erden-shacl',
+            version: SHACL_DISTRIBUTION_VERSION,
+            description: 'Qualified Erden SHACL engine for Linux arm64 (musl)',
+            os: ['linux'],
+            cpu: ['arm64'],
+            libc: ['musl'],
+            binary: 'bin/erden-shacl',
+        },
+    ],
+    [
+        'shacl/linux-x64-musl',
+        {
+            name: '@erden/shacl-linux-x64-musl',
+            tool: 'erden-shacl',
+            version: SHACL_DISTRIBUTION_VERSION,
+            description: 'Qualified Erden SHACL engine for Linux x64 (musl)',
+            os: ['linux'],
+            cpu: ['x64'],
+            libc: ['musl'],
+            binary: 'bin/erden-shacl',
+        },
+    ],
+    [
         'shacl/win32-x64-msvc',
         {
             name: '@erden/shacl-win32-x64-msvc',
@@ -166,10 +198,14 @@ const platformPackages = new Map([
 
 export function optionalPlatformDependencies(prefix, version) {
     return Object.fromEntries(
-        ['darwin-arm64', 'linux-arm64-gnu', 'linux-x64-gnu', 'win32-x64-msvc'].map((platform) => [
-            `@erden/${prefix}-${platform}`,
-            `workspace:${version}`,
-        ]),
+        [
+            'darwin-arm64',
+            'linux-arm64-gnu',
+            'linux-arm64-musl',
+            'linux-x64-gnu',
+            'linux-x64-musl',
+            'win32-x64-msvc',
+        ].map((platform) => [`@erden/${prefix}-${platform}`, `workspace:${version}`]),
     );
 }
 
@@ -281,7 +317,10 @@ const unmintedWorkspaceProfile = Object.freeze({
     independentPackages: new Set(),
 });
 
-/** The first mint adds four source-only platform packages and the resolver's exact optional dependencies. */
+/**
+ * The first mint adds the reasoner's six source-only platform packages (every anchor's, pinned or not: a platform added
+ * after the mint is committed unpinned) and the resolver's exact optional dependencies.
+ */
 export function withMintedReasoner(profile) {
     const entries = Object.values(QUALIFIED_REASONER_ARTIFACTS).map((anchor) => {
         const directory = anchor.packageName.slice('@erden/'.length).replace(/^reasoner-/u, '');

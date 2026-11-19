@@ -170,16 +170,26 @@ importers:
       '@erden/reasoner-linux-arm64-gnu':
         specifier: workspace:0.3.0+purrdf.0.12.0.dfb1df7
         version: link:../linux-arm64-gnu
+      '@erden/reasoner-linux-arm64-musl':
+        specifier: workspace:0.3.0+purrdf.0.12.0.dfb1df7
+        version: link:../linux-arm64-musl
       '@erden/reasoner-linux-x64-gnu':
         specifier: workspace:0.3.0+purrdf.0.12.0.dfb1df7
         version: link:../linux-x64-gnu
+      '@erden/reasoner-linux-x64-musl':
+        specifier: workspace:0.3.0+purrdf.0.12.0.dfb1df7
+        version: link:../linux-x64-musl
       '@erden/reasoner-win32-x64-msvc':
         specifier: workspace:0.3.0+purrdf.0.12.0.dfb1df7
         version: link:../win32-x64-msvc
 
   reasoner/linux-arm64-gnu: {}
 
+  reasoner/linux-arm64-musl: {}
+
   reasoner/linux-x64-gnu: {}
+
+  reasoner/linux-x64-musl: {}
 
   reasoner/protocol:
     dependencies:
@@ -199,16 +209,26 @@ importers:
       '@erden/shacl-linux-arm64-gnu':
         specifier: workspace:0.1.0+purrdf.3.0.1
         version: link:../linux-arm64-gnu
+      '@erden/shacl-linux-arm64-musl':
+        specifier: workspace:0.1.0+purrdf.3.0.1
+        version: link:../linux-arm64-musl
       '@erden/shacl-linux-x64-gnu':
         specifier: workspace:0.1.0+purrdf.3.0.1
         version: link:../linux-x64-gnu
+      '@erden/shacl-linux-x64-musl':
+        specifier: workspace:0.1.0+purrdf.3.0.1
+        version: link:../linux-x64-musl
       '@erden/shacl-win32-x64-msvc':
         specifier: workspace:0.1.0+purrdf.3.0.1
         version: link:../win32-x64-msvc
 
   shacl/linux-arm64-gnu: {}
 
+  shacl/linux-arm64-musl: {}
+
   shacl/linux-x64-gnu: {}
+
+  shacl/linux-x64-musl: {}
 
   shacl/win32-x64-msvc: {}
 

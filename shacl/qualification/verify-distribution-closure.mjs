@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { QUALIFIED_SHACL_ARTIFACTS, runBundledShaclEngineKnownAnswer } from '../distribution/src/index.js';
+import { QUALIFIED_SHACL_ARTIFACTS, runBundledShaclEngineKnownAnswer, detectRuntime } from '../distribution/src/index.js';
 import { PLATFORMS } from './finalize-artifacts.mjs';
 
 const qualification = import.meta.dirname;
@@ -17,11 +17,15 @@ execFileSync(process.execPath, [resolve(qualification, 'finalize-artifacts.mjs')
 
 assert.deepEqual(Object.keys(QUALIFIED_SHACL_ARTIFACTS).sort(), PLATFORMS.map((platform) => platform.key).sort());
 
+// This host's platform, its C library included: a musl host checks the musl package, not the glibc one.
+const host = detectRuntime();
 const current = PLATFORMS.find(
-    (platform) => platform.runtime.os === process.platform && platform.runtime.cpu === process.arch,
+    (platform) => platform.runtime.os === host.platform && platform.runtime.cpu === host.arch && platform.runtime.libc === host.libc,
 );
 let platformKnownAnswer = current === undefined ? 'not-applicable' : current.key;
-if (current !== undefined) {
+if (current !== undefined && QUALIFIED_SHACL_ARTIFACTS[current.key].sha256 === null) {
+    platformKnownAnswer = 'not-minted (a platform added after the mint; the next mint pins it)';
+} else if (current !== undefined) {
     const binary = resolve(shacl, current.directory, QUALIFIED_SHACL_ARTIFACTS[current.key].binaryPath);
     if (!existsSync(binary)) {
         platformKnownAnswer = 'not-installed (run shacl/qualification/build-from-source.mjs; the TS-6 release ships it)';

@@ -42,7 +42,16 @@ try {
         ['pack', '--json', '--pack-destination', artifacts],
         resolve(root, 'reasoner/distribution'),
     );
-    for (const directory of ['darwin-arm64', 'linux-arm64-gnu', 'linux-x64-gnu', 'win32-x64-msvc']) {
+    // Every platform package the resolver depends on, the unminted ones too (without a binary), so an offline install
+    // never looks one up in a registry.
+    for (const directory of [
+        'darwin-arm64',
+        'linux-arm64-gnu',
+        'linux-arm64-musl',
+        'linux-x64-gnu',
+        'linux-x64-musl',
+        'win32-x64-msvc',
+    ]) {
         runPackageManager(
             'pnpm',
             ['pack', '--json', '--pack-destination', artifacts],
@@ -61,7 +70,9 @@ try {
         optionalDependencies: {
             '@erden/reasoner-darwin-arm64': `file:artifacts/erden-reasoner-darwin-arm64-${REASONER_TOOL.version}.tgz`,
             '@erden/reasoner-linux-arm64-gnu': `file:artifacts/erden-reasoner-linux-arm64-gnu-${REASONER_TOOL.version}.tgz`,
+            '@erden/reasoner-linux-arm64-musl': `file:artifacts/erden-reasoner-linux-arm64-musl-${REASONER_TOOL.version}.tgz`,
             '@erden/reasoner-linux-x64-gnu': `file:artifacts/erden-reasoner-linux-x64-gnu-${REASONER_TOOL.version}.tgz`,
+            '@erden/reasoner-linux-x64-musl': `file:artifacts/erden-reasoner-linux-x64-musl-${REASONER_TOOL.version}.tgz`,
             '@erden/reasoner-win32-x64-msvc': `file:artifacts/erden-reasoner-win32-x64-msvc-${REASONER_TOOL.version}.tgz`,
         },
     };

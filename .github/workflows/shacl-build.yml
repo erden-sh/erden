@@ -1,16 +1,18 @@
 name: shacl-build
 
 # The minting path and qualification gate for the bundled SHACL engine, erden-shacl (shacl/), on the reasoner's model
-# (reasoner-build.yml) but with its own crate, toolchain (Rust 1.98.0) and builder image:
+# (reasoner-build.yml) but with its own crate, toolchain (Rust 1.98.0) and builder images:
 #
-# - build: every target is built twice, from two separate `git archive` exports of the commit, on a native runner for
-#   that target; the job fails unless the exported Cargo.lock is the qualified one and the binary answers the
-#   known-answer request. On Linux (the pinned builder image) both builds must be byte-identical; on Windows and macOS,
-#   which use the runner image's linker, a difference is a warning in the job summary and the first build is kept. The
-#   Windows build links the C runtime statically. The binary and its record are uploaded for the mint.
-# - determinism: every fresh binary answers one request set (shacl/qualification/determinism.mjs) twice; the answers
-#   must be byte-identical across the platforms apart from tool.executableDigest. A Linux difference fails; a Windows
-#   or macOS one is a warning.
+# - build: each of the six targets (Linux x64 and arm64 with glibc and with musl, Windows x64, macOS arm64) is built
+#   twice, from two separate `git archive` exports of the commit, on a native runner for that target; the job fails
+#   unless the exported Cargo.lock is the qualified one and the binary answers the known-answer request. On Linux (the
+#   pinned builder images: Debian for glibc, Alpine for the static musl executables) both builds must be
+#   byte-identical; on Windows and macOS, which use the runner image's linker, a difference is a warning in the job
+#   summary and the first build is kept. The Windows build links the C runtime statically. The binary and its record
+#   are uploaded for the mint.
+# - determinism: every fresh binary answers one request set (shacl/qualification/determinism.mjs) twice, the musl ones
+#   on the glibc runner of their architecture; the answers must be byte-identical across the platforms apart from
+#   tool.executableDigest. A Linux difference fails; a Windows or macOS one is a warning.
 # - qualification: the safeguard gate on the Linux x64 binary: the W3C SHACL 1.0 suite (every verdict right, report
 #   isomorphism as committed in shacl/qualification/w3c-expected.json) and the Core cross-check against shacl-engine.
 #
@@ -45,7 +47,8 @@ jobs:
             matrix:
                 include:
                     # These are versioned runner labels; GitHub-managed runner contents are not content-addressed.
-                    # Linux targets build inside the digest-pinned rust image, so only the host architecture matters.
+                    # Linux targets build inside a digest-pinned rust image (Debian for glibc, Alpine for musl), so
+                    # only the host architecture matters.
                     - target: x86_64-unknown-linux-gnu
                       runner: ubuntu-24.04
                     - target: aarch64-unknown-linux-gnu
@@ -54,6 +57,10 @@ jobs:
                       runner: windows-2025
                     - target: aarch64-apple-darwin
                       runner: macos-15
+                    - target: x86_64-unknown-linux-musl
+                      runner: ubuntu-24.04
+                    - target: aarch64-unknown-linux-musl
+                      runner: ubuntu-24.04-arm
         runs-on: ${{ matrix.runner }}
         steps:
             - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -115,6 +122,11 @@ jobs:
                       runner: windows-2025
                     - target: aarch64-apple-darwin
                       runner: macos-15
+                    # The musl executables are static, so they answer on the glibc runner of their architecture.
+                    - target: x86_64-unknown-linux-musl
+                      runner: ubuntu-24.04
+                    - target: aarch64-unknown-linux-musl
+                      runner: ubuntu-24.04-arm
         runs-on: ${{ matrix.runner }}
         steps:
             - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

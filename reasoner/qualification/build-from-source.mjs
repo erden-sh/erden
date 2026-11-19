@@ -25,7 +25,6 @@ import { PLATFORMS } from './finalize-artifacts.mjs';
 import {
   BUILD_LAYOUT,
   DEFAULT_SOURCE_DATE_EPOCH,
-  LINUX_BUILDER_IMAGE,
   RUST_TOOLCHAIN,
   assertAdapterMatchesCheckout,
   assertNativeHost,
@@ -103,7 +102,7 @@ function pinnedPackage(target) {
 
 /** A target built natively, with the runner image's linker (Windows, macOS), not in the pinned builder image. */
 function isNative(target) {
-  return !target.endsWith('-linux-gnu');
+  return !target.includes('-linux-');
 }
 
 function matchesPin(path, anchor) {
@@ -216,7 +215,7 @@ function main() {
       toolchain: RUST_TOOLCHAIN,
       host: { platform: process.platform, arch: process.arch },
       target,
-      ...(a.plan.kind === 'docker' ? { builderImage: LINUX_BUILDER_IMAGE, builderPlatform: a.plan.dockerPlatform } : {}),
+      ...(a.plan.kind === 'docker' ? { builderImage: a.plan.image, builderPlatform: a.plan.dockerPlatform } : {}),
       rustflags: a.plan.rustflagsRecord,
       runs,
       knownAnswer,

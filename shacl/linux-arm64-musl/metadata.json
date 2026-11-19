@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "packageName": "@erden/shacl-linux-arm64-musl",
+  "packageVersion": "0.1.0+purrdf.3.0.1",
+  "tool": {
+    "name": "erden-shacl",
+    "version": "0.1.0+purrdf.3.0.1",
+    "engineDigest": "sha256:026b0ef70f4bd68cbe0fff535b8287eb804825c057f46cc116ae1f2087b427cc"
+  },
+  "runtime": {
+    "os": "linux",
+    "cpu": "arm64",
+    "libc": "musl"
+  },
+  "target": "aarch64-unknown-linux-musl",
+  "binary": {
+    "path": "bin/erden-shacl",
+    "bytes": null,
+    "sha256": null
+  },
+  "knownAnswer": {
+    "fixture": "core-and-sparql",
+    "responseBytes": null,
+    "responseSha256": null
+  }
+}

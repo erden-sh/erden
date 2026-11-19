@@ -1,7 +1,7 @@
 import { RUNTIME_DIST_FILES } from './runtime-package-files.mjs';
 
-const SHACL_PLATFORM = /^shacl\/(?:linux-x64-gnu|linux-arm64-gnu|darwin-arm64|win32-x64-msvc)$/u;
-const REASONER_PLATFORM = /^reasoner\/(?:linux-x64-gnu|linux-arm64-gnu|darwin-arm64|win32-x64-msvc)$/u;
+const SHACL_PLATFORM = /^shacl\/(?:linux-(?:x64|arm64)-(?:gnu|musl)|darwin-arm64|win32-x64-msvc)$/u;
+const REASONER_PLATFORM = /^reasoner\/(?:linux-(?:x64|arm64)-(?:gnu|musl)|darwin-arm64|win32-x64-msvc)$/u;
 
 /** The exact pack of a resolver or platform package, or undefined for a source or runtime package. */
 function openExactAllowlist(packagePath, options) {

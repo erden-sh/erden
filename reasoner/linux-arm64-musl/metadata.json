@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "packageName": "@erden/reasoner-linux-arm64-musl",
+  "packageVersion": "0.3.0+purrdf.0.12.0.dfb1df7",
+  "tool": {
+    "name": "erden-reasoner",
+    "version": "0.3.0+purrdf.0.12.0.dfb1df7",
+    "adapterDigest": "sha256:b923a50baa9b12d132a5d3088d7cc5ee54b6a3b8ade1a2126027720ace476001",
+    "calculusDigest": "sha256:fc444990f8c8c180df359a6beca8811fa3f4f2382f590fcb2f2a56957c19529c"
+  },
+  "runtime": {
+    "os": "linux",
+    "cpu": "arm64",
+    "libc": "musl"
+  },
+  "target": "aarch64-unknown-linux-musl",
+  "binary": {
+    "path": "bin/erden-reasoner",
+    "bytes": null,
+    "sha256": null
+  },
+  "knownAnswer": {
+    "fixture": "subclass-type",
+    "responseBytes": null,
+    "responseSha256": null
+  }
+}
