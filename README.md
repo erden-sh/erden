@@ -70,8 +70,8 @@ turns that off). [docs/telemetry.md](/docs/telemetry.md) lists exactly what is s
    `powershell -ExecutionPolicy Bypass -File install.ps1 -Archive erden-<version>-win32-x64.zip`.
 
 The script checks the archive's size and SHA-256 before it extracts anything, and makes no network request. The CLI
-makes none either beyond a registry you configure, telemetry and the daily update check, and with
-`DO_NOT_TRACK=1` it makes only the registry's. It also checks each engine binary against its pinned size and SHA-256
+makes none either beyond a registry you configure, telemetry, the daily update check and `erden upgrade` when you
+run it, and with `DO_NOT_TRACK=1` it makes only the registry's and `erden upgrade`'s. It also checks each engine binary against its pinned size and SHA-256
 before every use.
 
 ## Building from source
