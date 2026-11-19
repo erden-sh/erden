@@ -23,10 +23,12 @@ import {
     writeArchives,
     zipBytes,
 } from '../../release/lib/archive.mjs';
+import { SIDECAR_URL_MODULES, sidecarPackages } from '../../release/lib/bundle.mjs';
 import { normalizeDeployedWorkspace } from '../../release/lib/deploy.mjs';
 import { declaredLicense, writeNpmNotices } from '../../release/lib/notices.mjs';
 import { RELEASE_PLATFORMS, archiveName, assertPinned, hostPlatform, sha256 } from '../../release/lib/platforms.mjs';
 import { pruneDeployedTree } from '../../release/lib/prune.mjs';
+import { removeAuthenticodeSignature } from '../../release/lib/sea.mjs';
 import { acceptedBuildResult, pinDifferences, pinsOf } from '../../release/pins.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -245,6 +247,64 @@ test('the archive leaves out what the CLI never loads and keeps what it does', (
             'package.json',
         ]);
         assert.equal(existsSync(join(lib, 'src')), false, 'an emptied directory goes too');
+    } finally {
+        rmSync(lib, { recursive: true, force: true });
+    }
+});
+
+test('a Windows executable loses its Authenticode signature before the CLI is injected', () => {
+    const directory = temporary('pe');
+    try {
+        // A minimal PE32+ header: 'MZ', e_lfanew at 0x3c, 'PE\0\0', a file header and the optional header magic.
+        const pe = 0x80;
+        const directories = pe + 24 + 112;
+        const body = Buffer.alloc(directories + 16 * 8 + 64);
+        body.write('MZ', 0, 'latin1');
+        body.writeUInt32LE(pe, 0x3c);
+        body.writeUInt32LE(0x00004550, pe);
+        body.writeUInt16LE(0x20b, pe + 24);
+        const signature = Buffer.alloc(40, 7);
+        body.writeUInt32LE(body.length, directories + 4 * 8);
+        body.writeUInt32LE(signature.length, directories + 4 * 8 + 4);
+        const path = join(directory, 'node.exe');
+        writeFileSync(path, Buffer.concat([body, signature]));
+        assert.equal(removeAuthenticodeSignature(path), 40);
+        const unsigned = readFileSync(path);
+        assert.equal(unsigned.length, body.length);
+        assert.equal(unsigned.readUInt32LE(directories + 4 * 8), 0);
+        assert.equal(unsigned.readUInt32LE(directories + 4 * 8 + 4), 0);
+        assert.equal(removeAuthenticodeSignature(path), 0, 'an unsigned file is left as it is');
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test('the sidecar holds the engines, n3 and rdf-canonize with what they import, and nothing else', () => {
+    const lib = temporary('sidecar');
+    try {
+        const manifests = {
+            n3: { dependencies: { 'readable-stream': '1' } },
+            'readable-stream': { dependencies: { buffer: '1' } },
+            buffer: {},
+            'rdf-canonize': { dependencies: { setimmediate: '1' } },
+            setimmediate: {},
+            effect: {},
+        };
+        for (const [name, manifest] of Object.entries(manifests)) {
+            mkdirSync(join(lib, 'node_modules', name), { recursive: true });
+            writeFileSync(join(lib, 'node_modules', name, 'package.json'), JSON.stringify({ name, ...manifest }));
+        }
+        assert.deepEqual(sidecarPackages(lib, ['@erden/shacl-linux-x64-gnu']), [
+            '@erden/reasoner-distribution',
+            '@erden/shacl-distribution',
+            '@erden/shacl-linux-x64-gnu',
+            'buffer',
+            'n3',
+            'rdf-canonize',
+            'readable-stream',
+            'setimmediate',
+        ]);
+        assert.ok(SIDECAR_URL_MODULES.includes('dist/installation.js'));
     } finally {
         rmSync(lib, { recursive: true, force: true });
     }

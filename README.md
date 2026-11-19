@@ -47,7 +47,8 @@ scoop install erden                                  # Windows x64
 ```
 
 Each release has one archive per platform: Linux x64 and arm64 for glibc and for musl (Alpine), macOS arm64 and
-Windows x64. An archive holds the `erden` CLI, the Node.js runtime it runs on, and both engines. Each release also has
+Windows x64, with the Linux and macOS ones as both `.tar.xz` and `.tar.gz`. An archive holds the `erden` CLI as one
+executable (Node.js with the CLI built in), the `den` command beside it, and both engines. Each release also has
 `install.sh`, `install.ps1` and `SHA256SUMS`. `https://erden.sh/install` and `https://erden.sh/install.ps1` redirect to
 the latest stable release's `install.sh` and `install.ps1` on GitHub; you can also download them from the
 [releases page](https://github.com/erden-sh/erden/releases) and run `sh install.sh` or
@@ -147,7 +148,8 @@ turns that off). [docs/telemetry.md](/docs/telemetry.md) lists exactly what is s
 1. On a connected machine, download the install script (`install.sh`, or `install.ps1` on Windows) and the archive for
    the offline machine's platform, both from the same release.
 2. Carry both files to the offline machine.
-3. Run `sh install.sh --archive erden-<version>-<platform>.tar.gz`. On Windows, run
+3. Run `sh install.sh --archive erden-<version>-<platform>.tar.xz` (smaller, and needs `xz` or macOS's `tar`), or
+   `--archive erden-<version>-<platform>.tar.gz` (needs only `gzip`). On Windows, run
    `powershell -ExecutionPolicy Bypass -File install.ps1 -Archive erden-<version>-win32-x64.zip`.
 
 The script checks the archive's size and SHA-256 before it extracts anything, and makes no network request. The CLI

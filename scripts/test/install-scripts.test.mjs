@@ -549,11 +549,17 @@ const POWERSHELL = ['pwsh', 'powershell'].find(
  * run in a copy whose platform check is forced, with the user's data folder under a temporary home. The copy keeps the
  * user PATH in a file instead of the registry, so no test changes the PATH of the machine it runs on.
  */
-function powershellFixture() {
+function powershellFixture(singleExecutable = true) {
     const context = fixture('win32-x64');
     const windows = process.platform === 'win32';
     const tree = join(context.directory, 'tree');
-    writeFileSync(join(tree, 'bin', 'erden.cmd'), '@echo off\r\necho installed-erden %*\r\n');
+    if (singleExecutable) {
+        // bin\erden.exe, the single executable: only its presence is checked, as install.ps1 runs nothing it installs.
+        writeFileSync(join(tree, 'bin', 'erden.exe'), 'MZ');
+    } else {
+        // An archive from before the single executable.
+        writeFileSync(join(tree, 'bin', 'erden.cmd'), '@echo off\r\necho installed-erden %*\r\n');
+    }
     writeFileSync(join(tree, 'bin', 'den.cmd'), '@echo off\r\necho installed-erden %*\r\n');
     const pin = {
         file: context.file,
@@ -645,7 +651,7 @@ describe('install.ps1', { skip: POWERSHELL === undefined ? 'no PowerShell on thi
             result = context.run(context.forced, ['-Archive', context.archive]);
             assert.equal(result.status, 0, result.stderr);
             assert.match(result.stdout, /Installed Erden 1\.0\.0 to /u);
-            assert.ok(existsSync(join(context.programs, VERSION, 'bin', 'erden.cmd')));
+            assert.ok(existsSync(join(context.programs, VERSION, 'bin', 'erden.exe')));
             assert.ok(existsSync(join(context.programs, VERSION, 'bin', 'den.cmd')));
             assert.deepEqual(readdirSync(context.programs).sort(), [VERSION, 'bin']);
         } finally {
@@ -653,8 +659,28 @@ describe('install.ps1', { skip: POWERSHELL === undefined ? 'no PowerShell on thi
         }
     });
 
+    it("writes launchers that run the single executable, or an earlier archive's erden.cmd", () => {
+        for (const singleExecutable of [true, false]) {
+            const context = powershellFixture(singleExecutable);
+            try {
+                const bin = join(context.programs, 'bin');
+                const result = context.run(context.forced, ['-Archive', context.archive, '-NoModifyPath']);
+                assert.equal(result.status, 0, result.stderr);
+                const launcher = readFileSync(join(bin, 'erden.cmd'), 'utf8');
+                const runs = singleExecutable ? 'erden.exe' : 'erden.cmd';
+                assert.ok(launcher.includes(`"%~dp0..\\${VERSION}\\bin\\${runs}" %*\r\n`), launcher);
+                assert.ok(
+                    readFileSync(join(bin, 'den.cmd'), 'utf8').includes(`"%~dp0..\\${VERSION}\\bin\\den.cmd" %*\r\n`),
+                );
+            } finally {
+                rmSync(context.directory, { recursive: true, force: true });
+            }
+        }
+    });
+
     it('adds its bin folder to the user PATH once, keeps the other entries as stored, and -Uninstall removes it', () => {
-        const context = powershellFixture();
+        // An earlier archive's erden.cmd, which the launchers can run here; the fixture's erden.exe is not a program.
+        const context = powershellFixture(false);
         try {
             const bin = join(context.programs, 'bin');
             writeFileSync(context.userPath, '%USERPROFILE%\\tools;C:\\Other');
@@ -664,7 +690,6 @@ describe('install.ps1', { skip: POWERSHELL === undefined ? 'no PowerShell on thi
             assert.equal(readFileSync(context.userPath, 'utf8'), `${bin};%USERPROFILE%\\tools;C:\\Other`);
             const launcher = readFileSync(join(bin, 'erden.cmd'), 'utf8');
             assert.match(launcher, /^@echo off\r\n/u);
-            assert.ok(launcher.includes(`"%~dp0..\\${VERSION}\\bin\\erden.cmd" %*\r\n`), launcher);
             assert.ok(existsSync(join(bin, 'den.cmd')));
             if (process.platform === 'win32') {
                 for (const name of ['erden', 'den']) {

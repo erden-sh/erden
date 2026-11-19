@@ -13,9 +13,12 @@ export const SHACL_DISTRIBUTION_VERSION = '0.1.0+purrdf.3.0.1';
 export const REQUIRED_PINS = new Map([
     ['@types/node', '24.13.3'],
     ['effect', '4.0.0-rc.111'],
+    // The release archive's bundler and single-executable injector (release/lib/bundle.mjs, release/lib/sea.mjs).
+    ['esbuild', '0.28.2'],
     ['oxfmt', '0.67.0'],
     ['oxlint', '1.82.0'],
     ['oxlint-tsgolint', '7.0.2001'],
+    ['postject', '1.0.0-alpha.6'],
     ['turbo', '2.10.12'],
     ['typescript', '7.0.2'],
     ['vitest', '4.1.11'],

@@ -174,10 +174,15 @@ public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint M
         $extract = Join-Path $work 'x'
         Expand-Archive -LiteralPath $download -DestinationPath $extract
         $unpacked = Join-Path $extract "erden-$Version-win32-x64"
-        foreach ($name in 'erden', 'den') {
-            if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $unpacked 'bin') "$name.cmd") -PathType Leaf)) {
-                Fail "$file does not hold bin\$name.cmd; nothing was installed"
-            }
+        # bin\erden.exe, the single executable, and bin\den.cmd, which runs it; archives from before the single
+        # executable hold bin\erden.cmd instead.
+        $unpackedBin = Join-Path $unpacked 'bin'
+        if (-not ((Test-Path -LiteralPath (Join-Path $unpackedBin 'erden.exe') -PathType Leaf) -or
+                (Test-Path -LiteralPath (Join-Path $unpackedBin 'erden.cmd') -PathType Leaf))) {
+            Fail "$file does not hold bin\erden.exe; nothing was installed"
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $unpackedBin 'den.cmd') -PathType Leaf)) {
+            Fail "$file does not hold bin\den.cmd; nothing was installed"
         }
         $target = Join-Path $programs $Version
         if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
@@ -190,7 +195,12 @@ public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint M
     # Each is written under a temporary name and then renamed over the old one, so it is never half written.
     New-Item -ItemType Directory -Force -Path $bin | Out-Null
     foreach ($name in 'erden', 'den') {
-        $launcher = "@echo off`r`nrem Runs Erden $Version. Written by the Erden installer.`r`n`"%~dp0..\$Version\bin\$name.cmd`" %*`r`n"
+        # erden.cmd runs the version's erden.exe (its erden.cmd in an archive from before the single executable).
+        $runs = "$name.cmd"
+        if ($name -eq 'erden' -and (Test-Path -LiteralPath (Join-Path (Join-Path $target 'bin') 'erden.exe') -PathType Leaf)) {
+            $runs = 'erden.exe'
+        }
+        $launcher = "@echo off`r`nrem Runs Erden $Version. Written by the Erden installer.`r`n`"%~dp0..\$Version\bin\$runs`" %*`r`n"
         $path = Join-Path $bin "$name.cmd"
         $temporary = Join-Path $bin ".$name.cmd.erden-install"
         [IO.File]::WriteAllText($temporary, $launcher, [Text.Encoding]::ASCII)

@@ -97,6 +97,11 @@ function installedTarget(home, version) {
 
 function erdenCommand(home, version, args) {
     if (process.platform === 'win32') {
+        // The single executable; releases from before it ran through bin\\erden.cmd.
+        const executable = join(installedTarget(home, version), 'bin', 'erden.exe');
+        if (existsSync(executable)) {
+            return [executable, args];
+        }
         return [
             process.env.ComSpec ?? 'cmd.exe',
             // `/s /c` takes off the outer quotes; each part keeps its own, for paths with spaces.
@@ -322,12 +327,13 @@ function main(values) {
         if (absent.status !== 404) {
             throw new Error(`The registry answered ${String(absent.status)} for an absent alias`);
         }
-        const add = spawnSync(...erdenCommand(home, version, ['add', `${alias}@1.0.0`, '--json']), {
+        const [addCommand, addArguments] = erdenCommand(home, version, ['add', `${alias}@1.0.0`, '--json']);
+        const add = spawnSync(addCommand, addArguments, {
             cwd: project,
             encoding: 'utf8',
             env: environment,
             windowsHide: true,
-            windowsVerbatimArguments: process.platform === 'win32',
+            windowsVerbatimArguments: addCommand.toLowerCase().endsWith('cmd.exe'),
         });
         if (add.status !== 3 || !`${add.stdout}${add.stderr}`.includes('PROJECT_DEPENDENCIES_RESOLUTION_FAILED')) {
             throw new Error(`erden add of an absent alias: ${String(add.status)}\n${add.stderr}${add.stdout}`);
@@ -351,7 +357,7 @@ function main(values) {
                 encoding: 'utf8',
                 env: homeEnvironment(offlineHome),
                 windowsHide: true,
-                windowsVerbatimArguments: process.platform === 'win32',
+                windowsVerbatimArguments: command.toLowerCase().endsWith('cmd.exe'),
             });
             if (offlineVersion.status !== 0 || offlineVersion.stdout.trim() !== version) {
                 throw new Error(`erden --version from ${name}: ${offlineVersion.stderr}${offlineVersion.stdout}`);

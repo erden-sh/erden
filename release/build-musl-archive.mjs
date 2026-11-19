@@ -65,12 +65,13 @@ function main() {
         copyFileSync(resolve(values.reasoner), join(inputs, 'erden-reasoner'));
         copyFileSync(resolve(values.shacl), join(inputs, 'erden-shacl'));
         const owner = `${String(process.getuid())}:${String(process.getgid())}`;
-        // The pinned image with Git added, which build-cli-archive.mjs exports the commit with.
-        const image = `erden-musl-builder:${MUSL_BUILD_IMAGE.slice(-12)}-${platform.cpu}`;
+        // The pinned image with what build-cli-archive.mjs runs besides Node.js added: Git, which exports the commit,
+        // binutils' strip, which strips the single executable's Node.js, and xz, which writes the .tar.xz.
+        const image = `erden-musl-builder:${MUSL_BUILD_IMAGE.slice(-12)}-sea-${platform.cpu}`;
         const prepared = spawnSync(
             'docker',
             ['build', '--quiet', '--platform', DOCKER_PLATFORMS[platform.cpu], '--tag', image, '-'],
-            { input: `FROM ${MUSL_BUILD_IMAGE}\nRUN apk add --no-cache git\n`, encoding: 'utf8' },
+            { input: `FROM ${MUSL_BUILD_IMAGE}\nRUN apk add --no-cache git binutils xz\n`, encoding: 'utf8' },
         );
         if (prepared.status !== 0) {
             throw new Error(`Could not prepare the musl builder image: ${prepared.stderr}`);

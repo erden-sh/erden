@@ -15,7 +15,7 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { RELEASE_PLATFORMS, assertPinned } from './lib/platforms.mjs';
@@ -67,7 +67,10 @@ for file in doctor.json init.json check.json pack.json tampered-check.txt tamper
 done
 `;
 
-/** The same steps on Windows, through the installed `erden.cmd`. */
+/**
+ * The same steps on Windows, through the launchers install.ps1 writes to %LOCALAPPDATA%\Programs\Erden\bin: erden.cmd
+ * runs the version's erden.exe (the single executable), den.cmd its den.cmd.
+ */
 function windowsSteps(target, demo) {
     // The native real path expands an 8.3 short name, which `erden init` refuses as an aliased parent.
     const work = mkdtempSync(join(realpathSync.native(tmpdir()), 'erden-install-steps-'));
@@ -75,7 +78,7 @@ function windowsSteps(target, demo) {
     function erden(args, name = 'erden') {
         return spawnSync(
             process.env.ComSpec ?? 'cmd.exe',
-            ['/d', '/s', '/c', `""${join(target, 'bin', `${name}.cmd`)}" ${args}"`],
+            ['/d', '/s', '/c', `""${join(dirname(target), 'bin', `${name}.cmd`)}" ${args}"`],
             // `/s /c` takes off the outer quotes, and the launcher keeps its own; Node's quoting would escape them.
             {
                 cwd: work,
