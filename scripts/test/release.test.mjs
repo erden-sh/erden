@@ -442,6 +442,8 @@ test('a canary tag publishes the pinned mint archives as a prerelease that is ne
         assert.deepEqual(canarySteps, stableSteps, `${name} pins the same actions as the stable release`);
     }
     assert.match(workflow.jobs['published-archives'].steps[0].run, /\^v\[0-9\]\+/u);
+    // The stable release refuses any tag but v<x.y.z>, whatever its trigger lets through.
+    assert.match(stable.jobs['published-archives'].steps[0].run, /=~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]/u);
     const publish = workflow.jobs.publish;
     assert.deepEqual(publish.permissions, { contents: 'write', actions: 'read' });
     assert.deepEqual(workflow.jobs['published-archives'].permissions, { contents: 'read', actions: 'read' });
