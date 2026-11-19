@@ -9,6 +9,7 @@ export const RUNTIME_DIST_FILES = new Map([
         [
             ...emittedPair('background'),
             ...emittedPair('bin'),
+            ...emittedPair('completions'),
             ...emittedPair('index'),
             ...emittedPair('installation'),
             ...emittedPair('main'),

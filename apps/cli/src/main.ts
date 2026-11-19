@@ -97,6 +97,7 @@ import {
     type ReasonerLimits,
 } from '@erden/project';
 
+import { COMPLETION_SHELLS, completionScript } from './completions.js';
 import { cliUserAgent, cliVersion, nodeInstallation, stateDirectory, type Installation } from './installation.js';
 import { nodeCliQueryRuntime, runQueryCommand, type CliQueryRuntime } from './query.js';
 import {
@@ -159,6 +160,7 @@ Usage:
   erden logout [--registry <origin>]
   erden upgrade [--channel <stable|canary>] [--check]
   erden telemetry <status|enable|disable>
+  erden completions <bash|zsh|fish|powershell>
   erden help
   erden --version
 
@@ -1193,6 +1195,16 @@ async function upgradeCommand(arguments_: ReadonlyArray<string>, runtime: CliRun
     }
 }
 
+function completionsCommand(arguments_: ReadonlyArray<string>, runtime: CliRuntime): number {
+    const [shell, ...rest] = arguments_;
+    const script = shell === undefined || rest.length > 0 ? undefined : completionScript(shell, CLI_HELP);
+    if (script === undefined) {
+        throw new CliUsageError(`completions requires one shell: ${COMPLETION_SHELLS.join(', ')}`);
+    }
+    runtime.stdout.write(script);
+    return CLI_EXIT.success;
+}
+
 export async function runCli(arguments_: ReadonlyArray<string>, runtime: CliRuntime = nodeCliRuntime): Promise<number> {
     const command = arguments_[0];
     if (command === '--version' || command === '-V' || command === 'version') {
@@ -1271,6 +1283,9 @@ export async function runCli(arguments_: ReadonlyArray<string>, runtime: CliRunt
         }
         if (command === 'upgrade') {
             return await upgradeCommand(arguments_.slice(1), runtime);
+        }
+        if (command === 'completions') {
+            return completionsCommand(arguments_.slice(1), runtime);
         }
         throw new CliUsageError(`unknown command: ${command}`);
     } catch (cause) {
