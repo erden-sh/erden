@@ -10,8 +10,9 @@
 // ERDEN_CHECK_MAIN_REPORTS_DUMP=<dir> also writes each fixture's outcome bytes to <dir>/<fixture>.txt, so two commits'
 // outcomes can be compared field by field rather than only by hash.
 //
-// The reasoner executable's digest is the one value a build changes without changing an answer: it is replaced by
-// EXECUTABLE_PLACEHOLDER before hashing, so a reasoner built from source gives the recorded bytes too.
+// The engines' executable digests are the values a build changes without changing an answer: the reasoner's and every
+// other `executableDigest` (erden-shacl's) are replaced by EXECUTABLE_PLACEHOLDER before hashing, so a new engine build
+// with the same answers gives the recorded bytes too.
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -60,14 +61,16 @@ async function outcomeBytes(fixture: DifferentialFixture): Promise<string> {
         Effect.result(service.check({ from: fixture.from, offline: true, ...fixture.options })),
     );
     const executable = inspectNodeBundledReasoner().digest ?? EXECUTABLE_PLACEHOLDER;
+    function normalized(text: string): string {
+        return text
+            .replaceAll(executable, EXECUTABLE_PLACEHOLDER)
+            .replaceAll(/"executableDigest":"sha256:[0-9a-f]{64}"/gu, `"executableDigest":"${EXECUTABLE_PLACEHOLDER}"`);
+    }
     if (result._tag === 'Success') {
-        return encodeCheckProjectReport(result.success).replaceAll(executable, EXECUTABLE_PLACEHOLDER);
+        return normalized(encodeCheckProjectReport(result.success));
     }
     const { name, code, stage, message, diagnostics } = result.failure as unknown as Record<string, unknown>;
-    return `${JSON.stringify({ name, code, stage, message, diagnostics })}\n`.replaceAll(
-        executable,
-        EXECUTABLE_PLACEHOLDER,
-    );
+    return normalized(`${JSON.stringify({ name, code, stage, message, diagnostics })}\n`);
 }
 
 // The reports were recorded on Linux x64; the reasoner-build workflow compares the platforms' answers instead.

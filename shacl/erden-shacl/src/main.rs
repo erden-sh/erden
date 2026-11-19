@@ -23,13 +23,29 @@ fn main() {
     // A panic is turned into a refusal by the session; keep the default hook from writing to stderr.
     std::panic::set_hook(Box::new(|_| {}));
     let digest = own_executable_digest().unwrap_or_else(|error| fatal(error));
-    let mut session = Session::new(digest, long_lived);
-    if long_lived {
-        serve(&mut session);
-    } else {
-        one_shot(&mut session);
+    // Requests are answered on a thread with a stack of known size, on every target. The SPARQL evaluator's stack
+    // guard (purrdf-stack) reads the calling thread's stack bounds with `pthread_getattr_np`; for the main thread musl
+    // reports only the part already mapped, so the guard saw almost no headroom and refused the known answer. A thread
+    // the program creates has its whole stack reported, here what glibc gives a main thread by default.
+    let worker = std::thread::Builder::new()
+        .name("erden-shacl".to_owned())
+        .stack_size(REQUEST_STACK_BYTES)
+        .spawn(move || {
+            let mut session = Session::new(digest, long_lived);
+            if long_lived {
+                serve(&mut session);
+            } else {
+                one_shot(&mut session);
+            }
+        })
+        .unwrap_or_else(|error| fatal(format!("cannot start the request thread: {error}")));
+    if worker.join().is_err() {
+        fatal("the request thread failed".to_owned());
     }
 }
+
+/// The stack of the thread that answers requests: 8 MiB, glibc's default main-thread stack on Linux.
+const REQUEST_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 fn one_shot(session: &mut Session) {
     let mut input = Vec::new();
