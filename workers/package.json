@@ -1,0 +1,24 @@
+{
+    "name": "erden-workers",
+    "version": "0.0.0",
+    "private": true,
+    "description": "The Cloudflare Workers behind erden.sh/install, erden.sh/download, erden.sh/updates and telemetry.erden.sh. Their own pnpm workspace, outside the CLI's, so the CLI's install never pulls in Wrangler.",
+    "license": "Apache-2.0",
+    "type": "module",
+    "scripts": {
+        "dev:telemetry": "wrangler dev -c telemetry/wrangler.jsonc --port 8788",
+        "dev:releases": "wrangler dev -c releases/wrangler.jsonc --port 8789",
+        "db:local": "wrangler d1 execute erden-telemetry --local -c telemetry/wrangler.jsonc --file telemetry/schema.sql && wrangler d1 execute erden-releases --local -c releases/wrangler.jsonc --file releases/schema.sql",
+        "check:deploy": "wrangler deploy --dry-run --env production -c telemetry/wrangler.jsonc --outdir .wrangler/dry-run/telemetry && wrangler deploy --dry-run --env production -c releases/wrangler.jsonc --outdir .wrangler/dry-run/releases",
+        "db:create": "wrangler d1 create erden-telemetry && wrangler d1 create erden-releases",
+        "db:migrate": "wrangler d1 execute erden-telemetry --remote --env production -c telemetry/wrangler.jsonc --file telemetry/schema.sql && wrangler d1 execute erden-releases --remote --env production -c releases/wrangler.jsonc --file releases/schema.sql",
+        "deploy": "wrangler deploy --env production -c telemetry/wrangler.jsonc && wrangler deploy --env production -c releases/wrangler.jsonc"
+    },
+    "devDependencies": {
+        "wrangler": "4.151.1"
+    },
+    "engines": {
+        "node": "^24"
+    },
+    "packageManager": "pnpm@10.15.0"
+}

@@ -68,6 +68,24 @@
         },
         {
             "check": "home-path",
+            "path": "apps/cli/test/telemetry.test.ts",
+            "pattern": "/home/alice|/Users/alice|/home/linuxbrew",
+            "reason": "test data: a placeholder user's home directory, and Homebrew's standard Linux prefix"
+        },
+        {
+            "check": "home-path",
+            "path": "apps/cli/test/upgrade.test.ts",
+            "pattern": "/home/alice",
+            "reason": "test data: a placeholder user's home directory"
+        },
+        {
+            "check": "home-path",
+            "path": "workers/telemetry/test/index.test.ts",
+            "pattern": "/home/alice",
+            "reason": "test data: a path the telemetry Worker must refuse as a command name"
+        },
+        {
+            "check": "home-path",
             "path": "reasoner/qualification/verify-binary-reproducible.test.ts",
             "pattern": "/Users/u",
             "reason": "test data: a placeholder macOS home directory for the Cargo home"

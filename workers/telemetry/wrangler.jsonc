@@ -1,0 +1,37 @@
+// The Erden CLI telemetry Worker (src/index.ts, schema.sql). The top level is for local development (`pnpm run
+// dev:telemetry` with a local D1); `env.production` is what the owner deploys, after creating the D1 database and
+// putting its ID below. Nothing here is deployed by CI.
+//
+// Observability (Workers Logs) is off: invocation logs would keep request details this Worker promises not to keep.
+{
+    "$schema": "../node_modules/wrangler/config-schema.json",
+    "name": "erden-telemetry",
+    "main": "./src/index.ts",
+    "compatibility_date": "2026-10-01",
+    "workers_dev": false,
+    "preview_urls": false,
+    "observability": { "enabled": false },
+    "triggers": { "crons": ["17 3 * * *"] },
+    "d1_databases": [
+        {
+            "binding": "DB",
+            "database_name": "erden-telemetry",
+            "database_id": "00000000-0000-0000-0000-000000000000",
+        },
+    ],
+    "env": {
+        "production": {
+            "name": "erden-telemetry",
+            "observability": { "enabled": false },
+            "routes": [{ "pattern": "telemetry.erden.sh", "custom_domain": true }],
+            "d1_databases": [
+                {
+                    "binding": "DB",
+                    "database_name": "erden-telemetry",
+                    // `wrangler d1 create erden-telemetry`, then put the ID it prints here.
+                    "database_id": "00000000-0000-0000-0000-000000000000",
+                },
+            ],
+        },
+    },
+}
