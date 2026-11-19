@@ -30,12 +30,14 @@ function run(command, args) {
     return execFileSync(command, args, { cwd: workspace, encoding: 'utf8', windowsHide: true }).replaceAll('\r\n', '\n');
 }
 
-// The four shipped targets; `Cargo.lock` also locks crates only other targets build (UEFI, WASI, WebAssembly).
+// The six shipped targets; `Cargo.lock` also locks crates only other targets build (UEFI, WASI, WebAssembly).
 export const TARGETS = Object.freeze([
     'x86_64-unknown-linux-gnu',
     'aarch64-unknown-linux-gnu',
     'x86_64-pc-windows-msvc',
     'aarch64-apple-darwin',
+    'x86_64-unknown-linux-musl',
+    'aarch64-unknown-linux-musl',
 ]);
 const metadata = JSON.parse(
     run('cargo', [

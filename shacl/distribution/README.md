@@ -2,7 +2,8 @@
 
 Offline-only resolver and doctor probe for `erden-shacl`, Erden's qualified SHACL engine (PurRDF `purrdf-shapes`
 3.0.1 behind the `erden.shacl/v1` protocol). It supports exactly the reasoner's platforms: Linux x64 and Linux arm64
-with glibc, macOS arm64 and Windows x64. Installation uses exact optional platform dependencies; resolution performs no
+with glibc or musl (Alpine), macOS arm64 and Windows x64. A platform the mint has not built yet (pins `null`) is
+refused with `NOT_MINTED`. Installation uses exact optional platform dependencies; resolution performs no
 downloads, install scripts, network lookup, native addon loading or filesystem writes.
 
 `resolveBundledShaclEngine()` returns the binary's path and its tool identity (name, version, engine digest,

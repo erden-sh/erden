@@ -113,6 +113,12 @@
             "path": "shacl/qualification/licenses/",
             "pattern": "site-policy@w3\\.org|paudley@blackcatinformatics\\.ca",
             "reason": "third-party license texts, copied byte for byte: the W3C's policy contact and an upstream author's address"
+        },
+        {
+            "check": "email",
+            "path": ".github/workflows/release.yml",
+            "pattern": "git@github\\.com",
+            "reason": "the SSH user in the clone URL the packages job pushes the Homebrew formula and the Scoop manifest with"
         }
     ]
 }

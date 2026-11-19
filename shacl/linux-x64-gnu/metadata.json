@@ -15,12 +15,12 @@
   "target": "x86_64-unknown-linux-gnu",
   "binary": {
     "path": "bin/erden-shacl",
-    "bytes": 11750792,
-    "sha256": "sha256:6ec761d9ead6f40dd747da972f1be7cd45e212321ea7c8dd134eb38bc42f06a9"
+    "bytes": 11754488,
+    "sha256": "sha256:844b8a8035c4ee280e41dd430a3a20c27f9cced6963a59831bef1ecbbe4db33b"
   },
   "knownAnswer": {
     "fixture": "core-and-sparql",
     "responseBytes": 2202,
-    "responseSha256": "sha256:db8343f26115bcb9b4d6ed4718b8b5cb34f14ae8cc004c04a09ee8e1bf43eea8"
+    "responseSha256": "sha256:04a17cebb45a8fc52cc8b6e911f297d96f9bb978d971baeec50781293975a234"
   }
 }

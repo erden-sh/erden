@@ -1,6 +1,9 @@
 export declare const PACKAGE_VERSION: '0.3.0+purrdf.0.12.0.dfb1df7';
 export declare const TOOL_VERSION: typeof PACKAGE_VERSION;
-/** Whether every platform's binary is pinned; a platform without pins runs a source build instead (TS-6). */
+/**
+ * Whether this version is minted: at least one platform's binary is pinned. A platform without pins (every platform
+ * before the first mint, or one added after it) runs a source build instead.
+ */
 export declare const REASONER_RELEASED: boolean;
 /** The tool identity requests to this version name and its answers carry. */
 export declare const REASONER_TOOL: Readonly<{
@@ -20,7 +23,7 @@ export declare const QUALIFIED_REASONER_ARTIFACTS: Readonly<
             runtime: Readonly<{ os: string; cpu: string; libc?: string }>;
             target: string;
             binaryPath: string;
-            /** Null while the version is unreleased, like the other pins. */
+            /** Null while the platform is not minted (the version is unreleased, or the platform is newer), like the other pins. */
             bytes: number | null;
             sha256: string | null;
             responseBytes: number | null;
@@ -73,6 +76,8 @@ export declare class BundledReasonerError extends Error {
 }
 
 export declare const detectRuntime: () => Readonly<RuntimeIdentity>;
+/** The C library a Linux process report names: 'glibc', 'musl', or 'unknown' (refused). */
+export declare const libcOfReport: (report: unknown) => 'glibc' | 'musl' | 'unknown';
 export interface QualifiedRequiredTool {
     readonly name: 'erden-reasoner';
     readonly version: typeof TOOL_VERSION;

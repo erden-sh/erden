@@ -14,7 +14,7 @@
 // not the success message says exactly which PATH entry to change, and that the old version must stay until then.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createWriteStream, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -41,6 +41,8 @@ export const RELEASE_DOWNLOAD_HOSTS = Object.freeze([
 const PLATFORMS: Readonly<Record<string, string>> = Object.freeze({
     'linux-x64': 'tar.gz',
     'linux-arm64': 'tar.gz',
+    'linux-x64-musl': 'tar.gz',
+    'linux-arm64-musl': 'tar.gz',
     'darwin-arm64': 'tar.gz',
     'win32-x64': 'zip',
 });
@@ -61,6 +63,8 @@ export interface CliUpgradeRuntime {
     readonly version: string;
     readonly platform: string;
     readonly arch: string;
+    /** 'musl' on a musl Linux (Alpine), whose releases are the -musl archives; undefined elsewhere. */
+    readonly libc?: 'musl' | undefined;
     readonly userAgent: string;
     readonly installation: Installation;
     readonly environment: Environment;
@@ -264,7 +268,7 @@ export async function runUpgrade(
     if (refused !== null && !options.check) {
         throw refused;
     }
-    const platform = `${runtime.platform}-${runtime.arch}`;
+    const platform = `${runtime.platform}-${runtime.arch}${runtime.libc === 'musl' ? '-musl' : ''}`;
     const extension = PLATFORMS[platform];
     if (extension === undefined) {
         throw new UpgradeError('UPGRADE_UNSUPPORTED_PLATFORM', `Erden has no release for ${platform}`, 1);
@@ -336,6 +340,31 @@ export function nodePathExists(path: string): boolean {
 export function windowsPowerShell(environment: Environment): string {
     const root = environment.SystemRoot ?? environment.SYSTEMROOT ?? 'C:\\Windows';
     return win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+}
+
+/**
+ * 'musl' when this Linux runs on musl, as install.sh decides it: Node.js reports no glibc version, and a musl loader is
+ * loaded or installed (/lib/ld-musl-<arch>.so.1).
+ */
+export function nodeLibc(): 'musl' | undefined {
+    if (process.platform !== 'linux') {
+        return undefined;
+    }
+    const report = process.report.getReport() as {
+        header?: { glibcVersionRuntime?: unknown };
+        sharedObjects?: ReadonlyArray<string>;
+    };
+    if (typeof report.header?.glibcVersionRuntime === 'string') {
+        return undefined;
+    }
+    const loaded = (report.sharedObjects ?? []).some((path) => /(?:^|\/)(?:ld-musl-|libc\.musl-)[^/]*$/u.test(path));
+    let installed = false;
+    try {
+        installed = readdirSync('/lib').some((name) => /^ld-musl-.+\.so\.1$/u.test(name));
+    } catch {
+        installed = false;
+    }
+    return loaded || installed ? 'musl' : undefined;
 }
 
 /** Runs install.sh with sh, or install.ps1 with Windows PowerShell, offline on the archive, in `directory`. */

@@ -6,10 +6,10 @@
     "engineDigest": "sha256:026b0ef70f4bd68cbe0fff535b8287eb804825c057f46cc116ae1f2087b427cc"
   },
   "workflow": ".github/workflows/shacl-build.yml",
-  "workflowRunId": 44387247694,
-  "sourceCommit": "1d76ba7adff59da87a38d1b08beae9c4b24e9c5d",
+  "workflowRunId": 44606390257,
+  "sourceCommit": "ec3c9e34308fa692ddf959c477aeb3456e2d0109",
   "sourceCommitNote": "pull request merge commit on GitHub; its shacl/ tree is the recorded one",
-  "crateSourceTree": "ccc291f006dab553c804e0e5c0d12f7efe50320a",
+  "crateSourceTree": "ffd36a08ecfdc3336d904558952f3727399e1ec8",
   "cargoLockDigest": "sha256:4f85d22854b0747423c286fd019533a6caf08a9dc3d4770ddbb637d307713244",
   "toolchain": {
     "rustc": "1.98.0",
@@ -17,12 +17,13 @@
     "llvm": "22.1.8"
   },
   "linuxBuilderImage": "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922",
+  "linuxMuslBuilderImage": "rust@sha256:2e452153b2dc6bed8ef123c4801cfd3f637e7c092846f974ecdce5e64af3120c",
   "targets": {
     "x86_64-unknown-linux-gnu": {
       "schemaVersion": 1,
-      "sourceCommit": "1d76ba7adff59da87a38d1b08beae9c4b24e9c5d",
-      "shaclCommitTree": "78f783a37fa5065619534fcceeaef6209a8867eb",
-      "crateSourceTree": "ccc291f006dab553c804e0e5c0d12f7efe50320a",
+      "sourceCommit": "ec3c9e34308fa692ddf959c477aeb3456e2d0109",
+      "shaclCommitTree": "17645e7844d64e2701556354344cba721501e429",
+      "crateSourceTree": "ffd36a08ecfdc3336d904558952f3727399e1ec8",
       "cargoLockDigest": "sha256:4f85d22854b0747423c286fd019533a6caf08a9dc3d4770ddbb637d307713244",
       "sourceDateEpoch": 1785703783,
       "toolchain": {
@@ -42,31 +43,31 @@
         {
           "label": "clean-target-a",
           "sourcePath": "git-archive-a",
-          "bytes": 11750792,
-          "sha256": "sha256:6ec761d9ead6f40dd747da972f1be7cd45e212321ea7c8dd134eb38bc42f06a9"
+          "bytes": 11754488,
+          "sha256": "sha256:844b8a8035c4ee280e41dd430a3a20c27f9cced6963a59831bef1ecbbe4db33b"
         },
         {
           "label": "clean-target-b",
           "sourcePath": "git-archive-b",
-          "bytes": 11750792,
-          "sha256": "sha256:6ec761d9ead6f40dd747da972f1be7cd45e212321ea7c8dd134eb38bc42f06a9"
+          "bytes": 11754488,
+          "sha256": "sha256:844b8a8035c4ee280e41dd430a3a20c27f9cced6963a59831bef1ecbbe4db33b"
         }
       ],
       "knownAnswer": {
         "fixture": "core-and-sparql",
         "responseBytes": 2202,
-        "responseSha256": "sha256:db8343f26115bcb9b4d6ed4718b8b5cb34f14ae8cc004c04a09ee8e1bf43eea8"
+        "responseSha256": "sha256:04a17cebb45a8fc52cc8b6e911f297d96f9bb978d971baeec50781293975a234"
       },
       "result": "byte-identical",
       "runner": "ubuntu-24.04",
-      "workflowRunId": 44387247694,
+      "workflowRunId": 44606390257,
       "package": "shacl/linux-x64-gnu/bin/erden-shacl"
     },
     "aarch64-unknown-linux-gnu": {
       "schemaVersion": 1,
-      "sourceCommit": "1d76ba7adff59da87a38d1b08beae9c4b24e9c5d",
-      "shaclCommitTree": "78f783a37fa5065619534fcceeaef6209a8867eb",
-      "crateSourceTree": "ccc291f006dab553c804e0e5c0d12f7efe50320a",
+      "sourceCommit": "ec3c9e34308fa692ddf959c477aeb3456e2d0109",
+      "shaclCommitTree": "17645e7844d64e2701556354344cba721501e429",
+      "crateSourceTree": "ffd36a08ecfdc3336d904558952f3727399e1ec8",
       "cargoLockDigest": "sha256:4f85d22854b0747423c286fd019533a6caf08a9dc3d4770ddbb637d307713244",
       "sourceDateEpoch": 1785703783,
       "toolchain": {
@@ -87,30 +88,30 @@
           "label": "clean-target-a",
           "sourcePath": "git-archive-a",
           "bytes": 9639384,
-          "sha256": "sha256:798293023e6f89d1de07f8e3fff198a8e484ead2675ad29b4d040e4af7ed8332"
+          "sha256": "sha256:2e39dedbf173f4cf45235fd0d93313a70c48421211d0e1284fd709ba98554ad0"
         },
         {
           "label": "clean-target-b",
           "sourcePath": "git-archive-b",
           "bytes": 9639384,
-          "sha256": "sha256:798293023e6f89d1de07f8e3fff198a8e484ead2675ad29b4d040e4af7ed8332"
+          "sha256": "sha256:2e39dedbf173f4cf45235fd0d93313a70c48421211d0e1284fd709ba98554ad0"
         }
       ],
       "knownAnswer": {
         "fixture": "core-and-sparql",
         "responseBytes": 2202,
-        "responseSha256": "sha256:fa5e6ef14dd9bd37ed080147d7f8525e4af1f05951ca0cae9eafcad02da04698"
+        "responseSha256": "sha256:7c4a0eb621b7c55454b947e863814e61612613f7a3278acdc09062e16be41378"
       },
       "result": "byte-identical",
       "runner": "ubuntu-24.04-arm",
-      "workflowRunId": 44387247694,
+      "workflowRunId": 44606390257,
       "package": "shacl/linux-arm64-gnu/bin/erden-shacl"
     },
     "aarch64-apple-darwin": {
       "schemaVersion": 1,
-      "sourceCommit": "1d76ba7adff59da87a38d1b08beae9c4b24e9c5d",
-      "shaclCommitTree": "78f783a37fa5065619534fcceeaef6209a8867eb",
-      "crateSourceTree": "ccc291f006dab553c804e0e5c0d12f7efe50320a",
+      "sourceCommit": "ec3c9e34308fa692ddf959c477aeb3456e2d0109",
+      "shaclCommitTree": "17645e7844d64e2701556354344cba721501e429",
+      "crateSourceTree": "ffd36a08ecfdc3336d904558952f3727399e1ec8",
       "cargoLockDigest": "sha256:4f85d22854b0747423c286fd019533a6caf08a9dc3d4770ddbb637d307713244",
       "sourceDateEpoch": 1785703783,
       "toolchain": {
@@ -128,31 +129,31 @@
         {
           "label": "clean-target-a",
           "sourcePath": "git-archive-a",
-          "bytes": 9616368,
-          "sha256": "sha256:f96a8ddac5e32c2e9be0c5261626b7439bf5bd4de5a36d4dbfd627b2dfb4ad4f"
+          "bytes": 9616432,
+          "sha256": "sha256:9fee0ac3954afe1732a515a1d047024c62924fc7951efb66c9b7c7239c5bfd27"
         },
         {
           "label": "clean-target-b",
           "sourcePath": "git-archive-b",
-          "bytes": 9616368,
-          "sha256": "sha256:f96a8ddac5e32c2e9be0c5261626b7439bf5bd4de5a36d4dbfd627b2dfb4ad4f"
+          "bytes": 9616432,
+          "sha256": "sha256:9fee0ac3954afe1732a515a1d047024c62924fc7951efb66c9b7c7239c5bfd27"
         }
       ],
       "knownAnswer": {
         "fixture": "core-and-sparql",
         "responseBytes": 2202,
-        "responseSha256": "sha256:347086910723900213fbd6dc6608c332cfca375eef2149df761c232166d983cf"
+        "responseSha256": "sha256:88488f5562a0207f46c8bfffaab0f03c1c5a5612107ec62eb00562279daa5331"
       },
       "result": "byte-identical",
       "runner": "macos-15",
-      "workflowRunId": 44387247694,
+      "workflowRunId": 44606390257,
       "package": "shacl/darwin-arm64/bin/erden-shacl"
     },
     "x86_64-pc-windows-msvc": {
       "schemaVersion": 1,
-      "sourceCommit": "1d76ba7adff59da87a38d1b08beae9c4b24e9c5d",
-      "shaclCommitTree": "78f783a37fa5065619534fcceeaef6209a8867eb",
-      "crateSourceTree": "ccc291f006dab553c804e0e5c0d12f7efe50320a",
+      "sourceCommit": "ec3c9e34308fa692ddf959c477aeb3456e2d0109",
+      "shaclCommitTree": "17645e7844d64e2701556354344cba721501e429",
+      "crateSourceTree": "ffd36a08ecfdc3336d904558952f3727399e1ec8",
       "cargoLockDigest": "sha256:4f85d22854b0747423c286fd019533a6caf08a9dc3d4770ddbb637d307713244",
       "sourceDateEpoch": 1785703783,
       "toolchain": {
@@ -170,25 +171,113 @@
         {
           "label": "clean-target-a",
           "sourcePath": "git-archive-a",
-          "bytes": 13990400,
-          "sha256": "sha256:43eb5fc2fa27572fa7e5f2edae28d1a6348527e207b786b38d2f922207978135"
+          "bytes": 13997056,
+          "sha256": "sha256:ebbbf784b6051b69d2f20a1205073c1a289911985b795ff4c14bea0e955952a9"
         },
         {
           "label": "clean-target-b",
           "sourcePath": "git-archive-b",
-          "bytes": 13990400,
-          "sha256": "sha256:43eb5fc2fa27572fa7e5f2edae28d1a6348527e207b786b38d2f922207978135"
+          "bytes": 13997056,
+          "sha256": "sha256:ebbbf784b6051b69d2f20a1205073c1a289911985b795ff4c14bea0e955952a9"
         }
       ],
       "knownAnswer": {
         "fixture": "core-and-sparql",
         "responseBytes": 2202,
-        "responseSha256": "sha256:8dbe07ceafb1d06b3726dab240a9fd63080f2e1791d154039e48337058b6cde3"
+        "responseSha256": "sha256:18c84780833bcb127234238d9444f1b734de40f1a731bffb6f781b79487715e6"
       },
       "result": "byte-identical",
       "runner": "windows-2025",
-      "workflowRunId": 44387247694,
+      "workflowRunId": 44606390257,
       "package": "shacl/win32-x64-msvc/bin/erden-shacl.exe"
+    },
+    "x86_64-unknown-linux-musl": {
+      "schemaVersion": 1,
+      "sourceCommit": "ec3c9e34308fa692ddf959c477aeb3456e2d0109",
+      "shaclCommitTree": "17645e7844d64e2701556354344cba721501e429",
+      "crateSourceTree": "ffd36a08ecfdc3336d904558952f3727399e1ec8",
+      "cargoLockDigest": "sha256:4f85d22854b0747423c286fd019533a6caf08a9dc3d4770ddbb637d307713244",
+      "sourceDateEpoch": 1785703783,
+      "toolchain": {
+        "rustc": "1.98.0",
+        "commit": "88d9e12ae178fab0fb5cc050a94da85685d449ea",
+        "llvm": "22.1.8"
+      },
+      "host": {
+        "platform": "linux",
+        "arch": "x64"
+      },
+      "target": "x86_64-unknown-linux-musl",
+      "builderImage": "rust@sha256:2e452153b2dc6bed8ef123c4801cfd3f637e7c092846f974ecdce5e64af3120c",
+      "builderPlatform": "linux/amd64",
+      "rustflags": "-C link-arg=-Wl,--build-id=none --remap-path-prefix=/work=/erden-shacl --remap-path-prefix=/usr/local/cargo=/cargo",
+      "runs": [
+        {
+          "label": "clean-target-a",
+          "sourcePath": "git-archive-a",
+          "bytes": 11855280,
+          "sha256": "sha256:36ea6981e84ce2f83dd356723884988278ebf45e1cb9ec53dbd935663453a300"
+        },
+        {
+          "label": "clean-target-b",
+          "sourcePath": "git-archive-b",
+          "bytes": 11855280,
+          "sha256": "sha256:36ea6981e84ce2f83dd356723884988278ebf45e1cb9ec53dbd935663453a300"
+        }
+      ],
+      "knownAnswer": {
+        "fixture": "core-and-sparql",
+        "responseBytes": 2202,
+        "responseSha256": "sha256:f3adfc69d2c7ff094200309891ad74a5570c51e362d494207665ffd67825ace1"
+      },
+      "result": "byte-identical",
+      "runner": "ubuntu-24.04",
+      "workflowRunId": 44606390257,
+      "package": "shacl/linux-x64-musl/bin/erden-shacl"
+    },
+    "aarch64-unknown-linux-musl": {
+      "schemaVersion": 1,
+      "sourceCommit": "ec3c9e34308fa692ddf959c477aeb3456e2d0109",
+      "shaclCommitTree": "17645e7844d64e2701556354344cba721501e429",
+      "crateSourceTree": "ffd36a08ecfdc3336d904558952f3727399e1ec8",
+      "cargoLockDigest": "sha256:4f85d22854b0747423c286fd019533a6caf08a9dc3d4770ddbb637d307713244",
+      "sourceDateEpoch": 1785703783,
+      "toolchain": {
+        "rustc": "1.98.0",
+        "commit": "88d9e12ae178fab0fb5cc050a94da85685d449ea",
+        "llvm": "22.1.8"
+      },
+      "host": {
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "target": "aarch64-unknown-linux-musl",
+      "builderImage": "rust@sha256:2e452153b2dc6bed8ef123c4801cfd3f637e7c092846f974ecdce5e64af3120c",
+      "builderPlatform": "linux/arm64",
+      "rustflags": "-C link-arg=-Wl,--build-id=none --remap-path-prefix=/work=/erden-shacl --remap-path-prefix=/usr/local/cargo=/cargo",
+      "runs": [
+        {
+          "label": "clean-target-a",
+          "sourcePath": "git-archive-a",
+          "bytes": 9507736,
+          "sha256": "sha256:592dc6a3d8c5b08000159d773a1fccfe7e4756b96250115f1d5e3c05df792d6e"
+        },
+        {
+          "label": "clean-target-b",
+          "sourcePath": "git-archive-b",
+          "bytes": 9507736,
+          "sha256": "sha256:592dc6a3d8c5b08000159d773a1fccfe7e4756b96250115f1d5e3c05df792d6e"
+        }
+      ],
+      "knownAnswer": {
+        "fixture": "core-and-sparql",
+        "responseBytes": 2202,
+        "responseSha256": "sha256:4b62ca762ab86656290649db7d792426ee1188abbdf2a4a4a55e90f1f2b27c30"
+      },
+      "result": "byte-identical",
+      "runner": "ubuntu-24.04-arm",
+      "workflowRunId": 44606390257,
+      "package": "shacl/linux-arm64-musl/bin/erden-shacl"
     }
   },
   "crossPlatformDeterminism": {
@@ -199,10 +288,12 @@
       "tool.executableDigest"
     ],
     "executables": {
-      "x86_64-unknown-linux-gnu": "sha256:6ec761d9ead6f40dd747da972f1be7cd45e212321ea7c8dd134eb38bc42f06a9",
-      "aarch64-unknown-linux-gnu": "sha256:798293023e6f89d1de07f8e3fff198a8e484ead2675ad29b4d040e4af7ed8332",
-      "aarch64-apple-darwin": "sha256:f96a8ddac5e32c2e9be0c5261626b7439bf5bd4de5a36d4dbfd627b2dfb4ad4f",
-      "x86_64-pc-windows-msvc": "sha256:43eb5fc2fa27572fa7e5f2edae28d1a6348527e207b786b38d2f922207978135"
+      "x86_64-unknown-linux-gnu": "sha256:844b8a8035c4ee280e41dd430a3a20c27f9cced6963a59831bef1ecbbe4db33b",
+      "aarch64-unknown-linux-gnu": "sha256:2e39dedbf173f4cf45235fd0d93313a70c48421211d0e1284fd709ba98554ad0",
+      "aarch64-apple-darwin": "sha256:9fee0ac3954afe1732a515a1d047024c62924fc7951efb66c9b7c7239c5bfd27",
+      "x86_64-pc-windows-msvc": "sha256:ebbbf784b6051b69d2f20a1205073c1a289911985b795ff4c14bea0e955952a9",
+      "x86_64-unknown-linux-musl": "sha256:36ea6981e84ce2f83dd356723884988278ebf45e1cb9ec53dbd935663453a300",
+      "aarch64-unknown-linux-musl": "sha256:592dc6a3d8c5b08000159d773a1fccfe7e4756b96250115f1d5e3c05df792d6e"
     }
   }
 }

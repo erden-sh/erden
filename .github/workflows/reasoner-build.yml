@@ -1,15 +1,16 @@
 name: reasoner-build
 
-# The documented minting path for the bundled reasoner: every target is built twice, from two separate
-# `git archive` exports of the qualification source commit, on a native runner for that target (no emulation or
-# cross-linking). The job fails unless the build answers the known-answer request, and on Linux (the pinned builder
-# image) unless both builds are byte-identical. On Windows and macOS, which use the runner image's linker, a difference
-# is a warning in the job summary and the first build is kept. The Windows build links the C runtime statically. The
-# binary and its reproducibility record are uploaded for the mint to copy into the platform packages.
+# The documented minting path for the bundled reasoner: each of the six targets (Linux x64 and arm64 with glibc and
+# with musl, Windows x64, macOS arm64) is built twice, from two separate `git archive` exports of the qualification
+# source commit, on a native runner for that target (no emulation or cross-linking). The job fails unless the build
+# answers the known-answer request, and on Linux (the pinned builder images: Debian for glibc, Alpine for the static
+# musl executables) unless both builds are byte-identical. On Windows and macOS, which use the runner image's linker,
+# a difference is a warning in the job summary and the first build is kept. The Windows build links the C runtime
+# statically. The binary and its reproducibility record are uploaded for the mint to copy into the platform packages.
 #
 # The determinism check then answers one request set (reasoner/qualification/determinism-cases.ts) with every freshly
-# built binary on its own runner, twice, and compares the answers (a Windows or macOS difference is a warning, a Linux
-# one fails). They must be byte-identical apart from
+# built binary on its own runner, twice (the static musl ones on the glibc runner of their architecture), and compares
+# the answers (a Windows or macOS difference is a warning, a Linux one fails). They must be byte-identical apart from
 # tool.executableDigest, the digest of the executable itself (see reasoner/qualification/determinism.mjs), because
 # erden.lock pins answers by fingerprint and a lock made on one platform has to verify on another.
 #
@@ -47,7 +48,8 @@ jobs:
             matrix:
                 include:
                     # These are versioned runner labels; GitHub-managed runner contents are not content-addressed.
-                    # Linux targets build inside the digest-pinned rust image, so only the host architecture matters.
+                    # Linux targets build inside a digest-pinned rust image (Debian for glibc, Alpine for musl), so
+                    # only the host architecture matters.
                     - target: x86_64-unknown-linux-gnu
                       runner: ubuntu-24.04
                     - target: aarch64-unknown-linux-gnu
@@ -56,6 +58,10 @@ jobs:
                       runner: windows-2025
                     - target: aarch64-apple-darwin
                       runner: macos-15
+                    - target: x86_64-unknown-linux-musl
+                      runner: ubuntu-24.04
+                    - target: aarch64-unknown-linux-musl
+                      runner: ubuntu-24.04-arm
         runs-on: ${{ matrix.runner }}
         steps:
             - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -122,6 +128,11 @@ jobs:
                       runner: windows-2025
                     - target: aarch64-apple-darwin
                       runner: macos-15
+                    # The musl executables are static, so they answer on the glibc runner of their architecture.
+                    - target: x86_64-unknown-linux-musl
+                      runner: ubuntu-24.04
+                    - target: aarch64-unknown-linux-musl
+                      runner: ubuntu-24.04-arm
         runs-on: ${{ matrix.runner }}
         steps:
             - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

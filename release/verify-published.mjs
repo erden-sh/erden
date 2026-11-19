@@ -4,13 +4,20 @@
 // live registry through the installed CLI. Then it requires the install script to refuse a changed and a truncated
 // archive, leaving nothing installed. It changes nothing on the registry.
 //
-// Usage: node release/verify-published.mjs --tag v<version>
+// `--platform linux-x64-musl` (or linux-arm64-musl, on an arm64 host) checks the musl archive the same way inside the
+// pinned Alpine image with libstdc++ (test-install.mjs builds it): the install over the network, `erden --version`,
+// `erden doctor`, the offline check of the demo and the two refusals. The registry reads are left to the glibc run.
+//
+// Usage: node release/verify-published.mjs --tag v<version> [--platform <linux-x64-musl|linux-arm64-musl>]
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+
+import { RELEASE_PLATFORMS } from './lib/platforms.mjs';
+import { containerArguments } from './test-install.mjs';
 
 const REPOSITORY = 'https://github.com/erden-sh/erden/releases/download';
 const USER_AGENT = 'erden-release-verify/1';
@@ -71,7 +78,13 @@ function installArguments(script, archive) {
 
 /** A home directory for one install, with the variables each platform's script and CLI read. */
 function homeEnvironment(home) {
-    return { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: join(home, 'AppData', 'Local') };
+    return {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        LOCALAPPDATA: join(home, 'AppData', 'Local'),
+        DO_NOT_TRACK: '1',
+    };
 }
 
 function installedTarget(home, version) {
@@ -96,7 +109,115 @@ function erdenCommand(home, version, args) {
     return [join(home, '.local', 'bin', 'erden'), args];
 }
 
+/** The steps of the musl check, run in the Alpine container as a user; $1 is the archive file name. */
+const MUSL_STEPS = `set -eu
+mkdir -p "$HOME"
+sh /in/install.sh --no-modify-path
+erden="$HOME/.local/bin/erden"
+echo "version $("$erden" --version)"
+echo "doctor $("$erden" doctor --json | tr '\\n' ' ')"
+work=$(mktemp -d)
+cp -R /in/demo "$work/demo"
+(cd "$work" && echo "check $("$erden" check demo --offline --json | tr '\\n' ' ')")
+for name in changed truncated; do
+    home=$(mktemp -d)
+    if HOME="$home" sh /in/install.sh --no-modify-path --archive "/in/$name-$1" > "$home.out" 2>&1; then
+        echo "refused-$name no"
+    elif [ -e "$home/.local/share/erden/$2" ]; then
+        echo "refused-$name left-behind"
+    else
+        echo "refused-$name $(head -n 1 "$home.out")"
+    fi
+done
+`;
+
+async function verifyMusl(values) {
+    const version = values.tag.replace(/^v/u, '');
+    const platform = values.platform;
+    if (RELEASE_PLATFORMS[platform]?.libc !== 'musl') {
+        throw new Error(`--platform names a musl platform, not ${String(platform)}`);
+    }
+    const base = `${REPOSITORY}/${values.tag}`;
+    const work = mkdtempSync(join(realpathSync.native(tmpdir()), 'erden-vp-'));
+    const archiveName = `erden-${version}-${platform}.tar.gz`;
+    const sums = (await download(`${base}/SHA256SUMS`)).toString('utf8');
+    const script = await download(`${base}/install.sh`);
+    const archive = await download(`${base}/${archiveName}`);
+    assertListed(sums, 'install.sh', script);
+    assertListed(sums, archiveName, archive);
+    console.log(`${archiveName}: ${String(archive.byteLength)} bytes, sha256:${sha256(archive)}, listed`);
+    const input = join(work, 'in');
+    mkdirSync(input);
+    writeFileSync(join(input, 'install.sh'), script);
+    cpSync(join(repository, 'examples/erden-demo'), join(input, 'demo'), { recursive: true });
+    const middle = Math.floor(archive.byteLength / 2);
+    const changed = Buffer.from(archive);
+    changed[middle] ^= 1;
+    writeFileSync(join(input, `changed-${archiveName}`), changed);
+    writeFileSync(join(input, `truncated-${archiveName}`), archive.subarray(0, middle));
+    writeFileSync(join(input, 'steps.sh'), MUSL_STEPS);
+    // The install downloads the archive itself, as a user's does, so this container has the network.
+    const container = containerArguments(platform, false);
+    const child = spawnSync(
+        'docker',
+        [
+            'run',
+            '--rm',
+            ...container.platform,
+            '--user',
+            '1000:1000',
+            '--env',
+            'HOME=/tmp/home',
+            '--env',
+            'DO_NOT_TRACK=1',
+            '--volume',
+            `${input}:/in:ro`,
+            container.image,
+            'sh',
+            '/in/steps.sh',
+            archiveName,
+            version,
+        ],
+        { encoding: 'utf8', maxBuffer: 1 << 26 },
+    );
+    if (child.status !== 0) {
+        throw new Error(`The ${platform} check failed (${String(child.status)}):\n${child.stderr}${child.stdout}`);
+    }
+    const lines = Object.fromEntries(
+        child.stdout
+            .trim()
+            .split('\n')
+            .map((line) => [line.slice(0, line.indexOf(' ')), line.slice(line.indexOf(' ') + 1)]),
+    );
+    if (lines.version !== version) {
+        throw new Error(`erden --version says ${String(lines.version)}, not ${version}`);
+    }
+    const doctor = JSON.parse(lines.doctor ?? '{}');
+    for (const engine of [doctor.reasoner, doctor.shaclEngine]) {
+        if (engine?.availability !== 'available' || engine.selfTest?.status !== 'passed') {
+            throw new Error(`erden doctor did not verify an engine: ${JSON.stringify(engine)}`);
+        }
+    }
+    if (JSON.parse(lines.check ?? '{}').outcome !== 'passed') {
+        throw new Error(`erden check on the demo: ${String(lines.check).slice(0, 2000)}`);
+    }
+    for (const name of ['changed', 'truncated']) {
+        const refusal = lines[`refused-${name}`] ?? '';
+        if (!refusal.startsWith('erden install: ')) {
+            throw new Error(`The install script did not refuse a ${name} archive cleanly: ${refusal}`);
+        }
+        console.log(`${name} archive refused: ${refusal}`);
+    }
+    console.log(
+        `erden doctor: ${String(doctor.outcome)}; ${String(doctor.reasoner.actualPlatformPackage)}, ${String(doctor.shaclEngine.actualPlatformPackage)}`,
+    );
+    console.log(`${platform}: the published release verified`);
+}
+
 function main(values) {
+    if (values.platform !== undefined) {
+        return verifyMusl(values);
+    }
     return (async () => {
         const version = values.tag.replace(/^v/u, '');
         const platform = platformName();
@@ -232,7 +353,7 @@ function main(values) {
     })();
 }
 
-const { values } = parseArgs({ options: { tag: { type: 'string' } } });
+const { values } = parseArgs({ options: { tag: { type: 'string' }, platform: { type: 'string' } } });
 if (values.tag === undefined || !/^v\d+\.\d+\.\d+(?:-rc\.\d+)?$/u.test(values.tag)) {
     throw new Error('Usage: verify-published.mjs --tag v<version>');
 }

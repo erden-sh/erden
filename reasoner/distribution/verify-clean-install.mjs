@@ -42,7 +42,9 @@ assert.equal(resolverManifest.version, version);
 assert.deepEqual(resolverManifest.optionalDependencies, {
     '@erden/reasoner-darwin-arm64': version,
     '@erden/reasoner-linux-arm64-gnu': version,
+    '@erden/reasoner-linux-arm64-musl': version,
     '@erden/reasoner-linux-x64-gnu': version,
+    '@erden/reasoner-linux-x64-musl': version,
     '@erden/reasoner-win32-x64-msvc': version,
 });
 assert.equal(JSON.parse(readFileSync(resolve(platformRoot, 'package.json'), 'utf8')).version, version);

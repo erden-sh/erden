@@ -32,12 +32,13 @@ const KNOWN_ANSWER_FIXTURE_URL = new URL('../fixtures/known-answer.request.json'
 const require = createRequire(import.meta.url);
 
 /**
- * Whether this version is released on every platform: each has the binary and known-answer pins the mint wrote
- * (`./artifacts.js`, from the tools release workflow, `release.yml`). No binary is committed. A
- * platform without pins runs a reasoner built from this repository's source (`pnpm run reasoner:build`), trusted by
- * the identity it answers with and the known-answer test, not by pins.
+ * Whether this version is released: the mint (`./artifacts.js`, from the tools release workflow, `release.yml`) pinned
+ * the binary and known answer of at least one platform. No binary is committed. A platform added after the mint stays
+ * unpinned until the next one, without making the version unreleased; that platform, like every platform of a version
+ * never minted, runs a reasoner built from this repository's source (`pnpm run reasoner:build`), trusted by the
+ * identity it answers with and the known-answer test, not by pins.
  */
-export const REASONER_RELEASED = Object.values(QUALIFIED_REASONER_ARTIFACTS).every(released);
+export const REASONER_RELEASED = Object.values(QUALIFIED_REASONER_ARTIFACTS).some(released);
 
 /** Whether a platform's binary is pinned, so its platform package is used instead of a source build. */
 function released(expected) {
@@ -128,15 +129,37 @@ function runtimeKey(runtime) {
         : `${runtime.platform}:${runtime.arch}:${runtime.libc}`;
 }
 
+/** A musl dynamic loader or C library (`ld-musl-x86_64.so.1`, `libc.musl-aarch64.so.1`) among loaded objects. */
+const MUSL_SHARED_OBJECT = /(?:^|\/)(?:ld-musl-|libc\.musl-)[^/]*$/u;
+
+/**
+ * The C library of a Linux process report: 'glibc' when Node reports the glibc it runs on, 'musl' when the musl loader
+ * or C library is loaded (Alpine's Node), and 'unknown' otherwise, which is refused.
+ */
+export function libcOfReport(report) {
+    const header = report && typeof report === 'object' ? report.header : undefined;
+    if (header && typeof header === 'object' && typeof header.glibcVersionRuntime === 'string') {
+        return 'glibc';
+    }
+    const sharedObjects = report && typeof report === 'object' ? report.sharedObjects : undefined;
+    if (
+        Array.isArray(sharedObjects) &&
+        sharedObjects.some((path) => typeof path === 'string' && MUSL_SHARED_OBJECT.test(path))
+    ) {
+        return 'musl';
+    }
+    return 'unknown';
+}
+
 export function detectRuntime() {
     if (process.platform !== 'linux') {
         return Object.freeze({ platform: process.platform, arch: process.arch });
     }
-    const report = process.report?.getReport();
-    const header = report && typeof report === 'object' ? report.header : undefined;
-    const libc =
-        header && typeof header === 'object' && typeof header.glibcVersionRuntime === 'string' ? 'glibc' : 'unknown';
-    return Object.freeze({ platform: process.platform, arch: process.arch, libc });
+    return Object.freeze({
+        platform: process.platform,
+        arch: process.arch,
+        libc: libcOfReport(process.report?.getReport()),
+    });
 }
 
 function describePlatform({ os, cpu, libc }) {
@@ -157,9 +180,9 @@ function refuse(code, refused, runtime) {
 }
 
 function selectExpected(runtime) {
-    if (runtime.platform === 'linux' && runtime.libc !== 'glibc') {
-        // detectRuntime reports any other C library, musl included, as 'unknown'.
-        return refuse(ERROR_CODES.unsupportedLibc, `linux ${runtime.arch} without glibc`, runtime);
+    if (runtime.platform === 'linux' && runtime.libc !== 'glibc' && runtime.libc !== 'musl') {
+        // detectRuntime reports any C library other than glibc and musl as 'unknown'.
+        return refuse(ERROR_CODES.unsupportedLibc, `linux ${runtime.arch} without glibc or musl`, runtime);
     }
     const expected = Object.hasOwn(EXPECTED, runtimeKey(runtime)) ? EXPECTED[runtimeKey(runtime)] : undefined;
     if (expected === undefined) {
@@ -355,7 +378,7 @@ function inspectSourceBuild(runtime, expected, options) {
     function missing() {
         return fail(
             ERROR_CODES.sourceBuildMissing,
-            `Reasoner ${TOOL_VERSION} has no released binary yet (release.yml); build it from source with \`pnpm run reasoner:build\`, or set ERDEN_REASONER_BIN to the absolute path of a reasoner built from this source`,
+            `Reasoner ${TOOL_VERSION} has no released binary for ${describePlatform(expected.runtime)} yet (release.yml); build it from source with \`pnpm run reasoner:build\`, or set ERDEN_REASONER_BIN to the absolute path of a reasoner built from this source`,
             details,
         );
     }

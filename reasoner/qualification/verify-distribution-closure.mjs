@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { QUALIFIED_REASONER_ARTIFACTS, runBundledReasonerKnownAnswer } from '../distribution/src/index.js';
+import { QUALIFIED_REASONER_ARTIFACTS, runBundledReasonerKnownAnswer, detectRuntime } from '../distribution/src/index.js';
 import { skipUntilReasonerRelease } from '../../scripts/lib/reasoner-release.mjs';
 import { PLATFORMS } from './finalize-artifacts.mjs';
 
@@ -19,11 +19,15 @@ skipUntilReasonerRelease('check:distribution:closure (reasoner)');
 
 assert.deepEqual(Object.keys(QUALIFIED_REASONER_ARTIFACTS).sort(), PLATFORMS.map((platform) => platform.key).sort());
 
+// This host's platform, its C library included: a musl host checks the musl package, not the glibc one.
+const host = detectRuntime();
 const current = PLATFORMS.find(
-    (platform) => platform.runtime.os === process.platform && platform.runtime.cpu === process.arch,
+    (platform) => platform.runtime.os === host.platform && platform.runtime.cpu === host.arch && platform.runtime.libc === host.libc,
 );
 let platformKnownAnswer = current === undefined ? 'not-applicable' : current.key;
-if (current !== undefined) {
+if (current !== undefined && QUALIFIED_REASONER_ARTIFACTS[current.key].sha256 === null) {
+    platformKnownAnswer = 'not-minted (a platform added after the mint; the next mint pins it)';
+} else if (current !== undefined) {
     const anchor = QUALIFIED_REASONER_ARTIFACTS[current.key];
     const binary = resolve(reasoner, current.directory, anchor.binaryPath);
     if (!existsSync(binary)) {

@@ -4,12 +4,22 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSyn
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { REASONER_RELEASED } from '../reasoner/distribution/src/index.js';
+import { QUALIFIED_REASONER_ARTIFACTS, detectRuntime } from '../reasoner/distribution/src/index.js';
 
 import { cleanupTestTempRoot, makeTestTempRoot } from './lib/test-temp-root.mjs';
 
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const isWindows = process.platform === 'win32';
+const runtime = detectRuntime();
+const runtimeKey =
+    runtime.libc === undefined
+        ? `${runtime.platform}:${runtime.arch}`
+        : `${runtime.platform}:${runtime.arch}:${runtime.libc}`;
+/**
+ * Whether the mint pinned this runtime's reasoner. An unreleased version, or a platform added after the mint (musl
+ * until the next one), has no platform package to install: the packed CLI runs the source build named below.
+ */
+const reasonerPinned = (QUALIFIED_REASONER_ARTIFACTS[runtimeKey]?.sha256 ?? null) !== null;
 const packagePaths = [
     'reasoner/protocol',
     'packages/package-format',
@@ -19,13 +29,12 @@ const packagePaths = [
     'packages/client',
     'apps/cli',
     'reasoner/distribution',
-    // An unreleased reasoner has no platform package: the packed CLI runs the source build named below.
-    ...(REASONER_RELEASED ? [currentPlatformPackage('reasoner')] : []),
+    ...(reasonerPinned ? [currentPlatformPackage('reasoner')] : []),
     'shacl/distribution',
     currentPlatformPackage('shacl'),
 ];
-/** While the reasoner is unreleased (release.yml), the packed CLI runs the workspace's build. */
-const reasonerEnvironment = REASONER_RELEASED
+/** While this runtime's reasoner is unpinned (release.yml), the packed CLI runs the workspace's build. */
+const reasonerEnvironment = reasonerPinned
     ? {}
     : {
           ERDEN_REASONER_BIN:
@@ -37,12 +46,14 @@ const reasonerEnvironment = REASONER_RELEASED
 function currentPlatformPackage(tool) {
     const directory = {
         'win32:x64': `${tool}/win32-x64-msvc`,
-        'linux:x64': `${tool}/linux-x64-gnu`,
-        'linux:arm64': `${tool}/linux-arm64-gnu`,
+        'linux:x64:glibc': `${tool}/linux-x64-gnu`,
+        'linux:arm64:glibc': `${tool}/linux-arm64-gnu`,
+        'linux:x64:musl': `${tool}/linux-x64-musl`,
+        'linux:arm64:musl': `${tool}/linux-arm64-musl`,
         'darwin:arm64': `${tool}/darwin-arm64`,
-    }[`${process.platform}:${process.arch}`];
+    }[runtimeKey];
     if (directory === undefined) {
-        throw new Error(`No bundled ${tool} package for ${process.platform} ${process.arch}`);
+        throw new Error(`No bundled ${tool} package for ${runtimeKey}`);
     }
     return directory;
 }

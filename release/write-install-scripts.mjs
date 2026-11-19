@@ -22,7 +22,7 @@ function shellVariables(pins) {
         .sort()
         .flatMap((platform) => {
             const pin = pins.archives[platform];
-            const name = platform.replace('-', '_');
+            const name = platform.replaceAll('-', '_');
             return [
                 `${name}_file='${pin?.file ?? ''}'`,
                 `${name}_sha256='${hex(pin)}'`,
@@ -35,9 +35,9 @@ function shellVariables(pins) {
 function powershellVariables(pins) {
     const pin = pins.archives['win32-x64'];
     return [
-        `$win32X64File = '${pin?.file ?? ''}'`,
-        `$win32X64Sha256 = '${hex(pin)}'`,
-        `$win32X64Bytes = ${pin === undefined ? '0' : String(pin.bytes)}`,
+        `    $win32X64File = '${pin?.file ?? ''}'`,
+        `    $win32X64Sha256 = '${hex(pin)}'`,
+        `    $win32X64Bytes = ${pin === undefined ? '0' : String(pin.bytes)}`,
     ].join('\n');
 }
 

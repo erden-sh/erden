@@ -20,7 +20,9 @@
     "optionalDependencies": {
         "@erden/shacl-darwin-arm64": "workspace:0.1.0+purrdf.3.0.1",
         "@erden/shacl-linux-arm64-gnu": "workspace:0.1.0+purrdf.3.0.1",
+        "@erden/shacl-linux-arm64-musl": "workspace:0.1.0+purrdf.3.0.1",
         "@erden/shacl-linux-x64-gnu": "workspace:0.1.0+purrdf.3.0.1",
+        "@erden/shacl-linux-x64-musl": "workspace:0.1.0+purrdf.3.0.1",
         "@erden/shacl-win32-x64-msvc": "workspace:0.1.0+purrdf.3.0.1"
     },
     "engines": {

@@ -74,6 +74,9 @@ jobs:
         permissions:
             contents: write
             actions: read
+            # The provenance attestations of the published assets.
+            id-token: write
+            attestations: write
         steps:
             - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
             - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -100,6 +103,13 @@ jobs:
                       echo
                       cat assets/RELEASE-NOTES.md
                   } > assets/CANARY-NOTES.md
+            # `gh attestation verify <asset> --repo erden-sh/erden` checks any of them against this run.
+            - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+              with:
+                  subject-checksums: assets/SHA256SUMS
+            - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+              with:
+                  subject-path: assets/SHA256SUMS
             - name: Create a draft prerelease, check the uploaded assets, then publish it
               shell: bash
               env:

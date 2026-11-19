@@ -19,6 +19,7 @@ import {
     BundledShaclEngineError,
     ERROR_CODES,
     inspectBundledShaclEngine,
+    libcOfReport,
     PACKAGE_VERSION,
     QUALIFIED_SHACL_ARTIFACTS,
     resolveBundledShaclEngine,
@@ -49,6 +50,11 @@ const binaries: Readonly<Record<PlatformName, string>> = {
     darwinArm64: 'bin/erden-shacl',
     windows: 'bin/erden-shacl.exe',
 };
+/** The musl packages, added after this version's mint: unpinned until the next one (finalize-artifacts.mjs). */
+const muslDirectories = {
+    'linux:x64:musl': resolve(root, 'shacl/linux-x64-musl'),
+    'linux:arm64:musl': resolve(root, 'shacl/linux-arm64-musl'),
+} as const;
 const current = platformNames.find(
     (name) => runtimes[name].platform === process.platform && runtimes[name].arch === process.arch,
 );
@@ -122,14 +128,25 @@ afterAll(() => {
 });
 
 describe('the minted anchors', () => {
-    it('pin all four platforms to the committed packages and metadata', () => {
-        expect(Object.keys(QUALIFIED_SHACL_ARTIFACTS).sort()).toEqual(platformNames.map(keyOf).sort());
+    it('pin all six platforms to the committed packages and metadata', () => {
+        expect(Object.keys(QUALIFIED_SHACL_ARTIFACTS).sort()).toEqual(
+            [...platformNames.map(keyOf), ...Object.keys(muslDirectories)].sort(),
+        );
         expect([...SUPPORTED_PLATFORMS].sort()).toEqual([
             'darwin arm64',
             'linux arm64 (glibc)',
+            'linux arm64 (musl)',
             'linux x64 (glibc)',
+            'linux x64 (musl)',
             'win32 x64',
         ]);
+        for (const [key, directory] of Object.entries(muslDirectories)) {
+            const anchor = QUALIFIED_SHACL_ARTIFACTS[key];
+            const metadata = JSON.parse(readFileSync(resolve(directory, 'metadata.json'), 'utf8')) as {
+                binary: unknown;
+            };
+            expect(metadata.binary).toEqual({ path: 'bin/erden-shacl', bytes: anchor?.bytes, sha256: anchor?.sha256 });
+        }
         for (const name of platformNames) {
             const anchor = anchorOf(name);
             const metadata = JSON.parse(readFileSync(resolve(directories[name], 'metadata.json'), 'utf8')) as {
@@ -177,7 +194,7 @@ describe('the minted anchors', () => {
     });
 
     it('contain no lifecycle, download, network or native-addon mechanism', () => {
-        for (const directory of Object.values(directories)) {
+        for (const directory of [...Object.values(directories), ...Object.values(muslDirectories)]) {
             const manifest = JSON.parse(readFileSync(resolve(directory, 'package.json'), 'utf8')) as {
                 scripts?: unknown;
             };
@@ -367,4 +384,49 @@ describe.runIf(current !== undefined)('the bundled engine on this platform', () 
             expect(answer.responseDigest).toBe(anchorOf(current ?? 'linux').responseSha256);
         },
     );
+});
+
+describe('musl Linux', () => {
+    it('reads the C library from the process report: glibc by version, musl by its loaded loader or library', () => {
+        expect(libcOfReport({ header: { glibcVersionRuntime: '2.39' }, sharedObjects: [] })).toBe('glibc');
+        expect(libcOfReport({ header: {}, sharedObjects: ['/usr/local/bin/node', '/lib/ld-musl-aarch64.so.1'] })).toBe(
+            'musl',
+        );
+        expect(libcOfReport({ header: {}, sharedObjects: ['/usr/lib/libc.musl-x86_64.so.1'] })).toBe('musl');
+        for (const report of [{ header: {}, sharedObjects: ['/lib/libc.so'] }, { header: {} }, null, 'report']) {
+            expect(libcOfReport(report)).toBe('unknown');
+        }
+    });
+
+    for (const [key, directory] of Object.entries(muslDirectories)) {
+        const [, arch] = key.split(':');
+        it(`selects the linux ${String(arch)} musl package like a glibc one, and refuses it until it is minted`, () => {
+            const anchor = QUALIFIED_SHACL_ARTIFACTS[key];
+            expect(anchor).toMatchObject({
+                packageName: `@erden/shacl-linux-${String(arch)}-musl`,
+                runtime: { os: 'linux', cpu: arch, libc: 'musl' },
+                target: `${arch === 'x64' ? 'x86_64' : 'aarch64'}-unknown-linux-musl`,
+            });
+            const runtime = { platform: 'linux', arch: String(arch), libc: 'musl' };
+            if (anchor?.sha256 === null) {
+                expectRefusal(
+                    () => resolveBundledShaclEngine({ runtime, locatePackage: unreachable }),
+                    ERROR_CODES.notMinted,
+                );
+                const metadata = JSON.parse(readFileSync(resolve(directory, 'metadata.json'), 'utf8')) as {
+                    knownAnswer: unknown;
+                };
+                expect(metadata.knownAnswer).toEqual({
+                    fixture: 'core-and-sparql',
+                    responseBytes: null,
+                    responseSha256: null,
+                });
+            } else {
+                expectRefusal(
+                    () => resolveBundledShaclEngine({ runtime, locatePackage: () => undefined }),
+                    ERROR_CODES.packageMissing,
+                );
+            }
+        });
+    }
 });

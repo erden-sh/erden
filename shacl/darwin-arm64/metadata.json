@@ -14,12 +14,12 @@
   "target": "aarch64-apple-darwin",
   "binary": {
     "path": "bin/erden-shacl",
-    "bytes": 9616368,
-    "sha256": "sha256:f96a8ddac5e32c2e9be0c5261626b7439bf5bd4de5a36d4dbfd627b2dfb4ad4f"
+    "bytes": 9616432,
+    "sha256": "sha256:9fee0ac3954afe1732a515a1d047024c62924fc7951efb66c9b7c7239c5bfd27"
   },
   "knownAnswer": {
     "fixture": "core-and-sparql",
     "responseBytes": 2202,
-    "responseSha256": "sha256:347086910723900213fbd6dc6608c332cfca375eef2149df761c232166d983cf"
+    "responseSha256": "sha256:88488f5562a0207f46c8bfffaab0f03c1c5a5612107ec62eb00562279daa5331"
   }
 }

@@ -181,7 +181,7 @@ test('a pinned input is refused when one byte or its size differs', () => {
     }
 });
 
-test('the Node.js runtime pins name the official archive of each of the four platforms', () => {
+test('the Node.js runtime pins name the Node.js archive of each release platform', () => {
     const runtime = JSON.parse(readFileSync(join(root, 'release/node-runtime.json'), 'utf8'));
     assert.equal(runtime.version, readFileSync(join(root, '.node-version'), 'utf8').trim());
     assert.deepEqual(Object.keys(runtime.platforms).sort(), Object.keys(RELEASE_PLATFORMS).sort());
@@ -191,7 +191,18 @@ test('the Node.js runtime pins name the official archive of each of the four pla
         assert.ok(pin.file.startsWith(`node-v${runtime.version}-`), platform);
     }
     assert.equal(hostPlatform({ platform: 'linux', arch: 'x64' }), 'linux-x64');
+    assert.equal(hostPlatform({ platform: 'linux', arch: 'x64', libc: 'musl' }), 'linux-x64-musl');
+    assert.equal(hostPlatform({ platform: 'linux', arch: 'arm64', libc: 'musl' }), 'linux-arm64-musl');
     assert.equal(hostPlatform({ platform: 'darwin', arch: 'x64' }), undefined);
+    // nodejs.org publishes no musl build; the musl archives ship the Node.js project's unofficial builds.
+    for (const [platform, pin] of Object.entries(runtime.platforms)) {
+        const musl = RELEASE_PLATFORMS[platform].libc === 'musl';
+        assert.equal(
+            pin.baseUrl,
+            musl ? `https://unofficial-builds.nodejs.org/download/release/v${runtime.version}/` : undefined,
+        );
+        assert.equal(pin.file.includes('-musl.'), musl, platform);
+    }
     assert.equal(archiveName('1.0.0', 'win32-x64'), 'erden-1.0.0-win32-x64.zip');
 });
 
@@ -211,7 +222,7 @@ function record(platform, digest = 'a') {
     };
 }
 
-test('a release accepts only the pinned archives and engines, on all four platforms', () => {
+test('a release accepts only the pinned archives and engines, on every release platform', () => {
     const records = Object.fromEntries(Object.keys(RELEASE_PLATFORMS).map((platform) => [platform, record(platform)]));
     const pins = pinsOf(records, { mintRunId: 123 });
     assert.equal(pins.complete, true);
@@ -242,7 +253,7 @@ test('a release accepts only the pinned archives and engines, on all four platfo
     assert.deepEqual(pinDifferences(partial, { 'linux-x64': records['linux-x64'] }), []);
     assert.match(
         pinDifferences(partial, { 'linux-x64': records['linux-x64'] }, { release: true }).join('\n'),
-        /fewer than four/u,
+        /fewer than every release platform/u,
     );
     assert.throws(
         () => pinsOf({ ...records, 'linux-x64': { ...records['linux-x64'], sourceDateEpoch: 1 } }),
@@ -345,7 +356,11 @@ test('a tag builds nothing: it publishes the archives of the mint run its pins n
         .filter(([, job]) => onTag(job))
         .map(([name]) => name)
         .sort();
-    assert.deepEqual(tagJobs, ['publish', 'published-archives', 'verify']);
+    assert.deepEqual(tagJobs, ['packages', 'publish', 'published-archives', 'verify']);
+    // The package managers are updated only from a verified release, from the committed pins, with no build.
+    assert.deepEqual(workflow.jobs.packages.needs, 'verify');
+    assert.ok(workflow.jobs.packages.steps.some((step) => step.run?.includes('release/write-package-manifests.mjs')));
+    assert.ok(!workflow.jobs.packages.steps.some((step) => step.run?.includes('build-cli-archive.mjs')));
     for (const name of ['published-archives', 'publish']) {
         const steps = workflow.jobs[name].steps;
         const download = steps.findIndex((step) => step.uses?.startsWith('actions/download-artifact@'));
@@ -381,8 +396,13 @@ test('the release workflow pins every action, and only its publish job and the j
     assert.deepEqual(workflow.on.push.tags, ['v*', '!v*-rc.*']);
     for (const [name, job] of Object.entries(workflow.jobs)) {
         if (name === 'publish') {
-            // actions: read fetches the mint run's archive artifacts.
-            assert.deepEqual(job.permissions, { contents: 'write', actions: 'read' });
+            // actions: read fetches the mint run's archive artifacts; id-token and attestations sign their provenance.
+            assert.deepEqual(job.permissions, {
+                contents: 'write',
+                actions: 'read',
+                'id-token': 'write',
+                attestations: 'write',
+            });
             const publishes = evaluateGuard.bind(undefined, job.if);
             const tag = {
                 event_name: 'push',
@@ -397,8 +417,15 @@ test('the release workflow pins every action, and only its publish job and the j
             );
             assert.equal(publishes({ ...tag, repository: 'someone/erden' }), false, 'a fork');
             assert.equal(publishes({ ...tag, event_name: 'workflow_dispatch' }), false, 'a mint');
-        } else if (name === 'published-archives' || name === 'archive') {
-            // These fetch another run's artifacts (the mint's archives, the engine mint's binaries); nothing more.
+        } else if (name === 'archive') {
+            // It fetches the engine mint's binaries and attests the provenance of the archive it builds.
+            assert.deepEqual(
+                job.permissions,
+                { contents: 'read', actions: 'read', 'id-token': 'write', attestations: 'write' },
+                name,
+            );
+        } else if (name === 'published-archives') {
+            // It fetches the mint's archives; nothing more.
             assert.deepEqual(job.permissions, { contents: 'read', actions: 'read' }, name);
         } else {
             assert.equal(job.permissions, undefined, `${name} must not raise permissions`);
@@ -445,7 +472,12 @@ test('a canary tag publishes the pinned mint archives as a prerelease that is ne
     // The stable release refuses any tag but v<x.y.z>, whatever its trigger lets through.
     assert.match(stable.jobs['published-archives'].steps[0].run, /=~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]/u);
     const publish = workflow.jobs.publish;
-    assert.deepEqual(publish.permissions, { contents: 'write', actions: 'read' });
+    assert.deepEqual(publish.permissions, {
+        contents: 'write',
+        actions: 'read',
+        'id-token': 'write',
+        attestations: 'write',
+    });
     assert.deepEqual(workflow.jobs['published-archives'].permissions, { contents: 'read', actions: 'read' });
     const publishes = evaluateGuard.bind(undefined, publish.if);
     const tag = { event_name: 'push', repository: 'erden-sh/erden', event: { repository: { private: false } } };
@@ -465,4 +497,34 @@ test('a canary tag publishes the pinned mint archives as a prerelease that is ne
             }
         }
     }
+});
+
+test('the Homebrew formula and the Scoop manifest name the pinned archives', async () => {
+    const { homebrewFormula, scoopManifest } = await import('../../release/write-package-manifests.mjs');
+    const records = Object.fromEntries(Object.keys(RELEASE_PLATFORMS).map((platform) => [platform, record(platform)]));
+    const pins = pinsOf(records, { mintRunId: 1 });
+    const formula = homebrewFormula(pins);
+    for (const platform of ['darwin-arm64', 'linux-arm64', 'linux-x64']) {
+        const pin = pins.archives[platform];
+        assert.ok(
+            formula.includes(
+                `url "https://github.com/erden-sh/erden/releases/download/v1.0.0/${pin.file}"\n      sha256 "${pin.sha256.slice(7)}"`,
+            ),
+            platform,
+        );
+    }
+    assert.doesNotMatch(formula, /musl|win32/u);
+    assert.doesNotMatch(formula, /^  version /mu, 'Homebrew reads the version from the URL');
+    assert.match(formula, /generate_completions_from_executable\(bin\/"erden", "completions"/u);
+    const manifest = JSON.parse(scoopManifest(pins));
+    assert.equal(manifest.version, '1.0.0');
+    assert.deepEqual(manifest.architecture['64bit'], {
+        url: 'https://github.com/erden-sh/erden/releases/download/v1.0.0/erden-1.0.0-win32-x64.zip',
+        hash: pins.archives['win32-x64'].sha256.slice(7),
+        extract_dir: 'erden-1.0.0-win32-x64',
+    });
+    assert.deepEqual(manifest.bin, ['bin\\erden.cmd', 'bin\\den.cmd']);
+    assert.equal(manifest.autoupdate.architecture['64bit'].hash.url, '$baseurl/SHA256SUMS');
+    const { 'linux-arm64': _, ...partial } = pins.archives;
+    assert.throws(() => homebrewFormula({ ...pins, archives: partial }), /has no linux-arm64 archive/u);
 });

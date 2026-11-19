@@ -101,13 +101,36 @@ function inside(root, path) {
     return fragment !== '..' && !fragment.startsWith(`..${sep}`) && !isAbsolute(fragment);
 }
 
+/** A musl dynamic loader or C library (`ld-musl-x86_64.so.1`, `libc.musl-aarch64.so.1`) among loaded objects. */
+const MUSL_SHARED_OBJECT = /(?:^|\/)(?:ld-musl-|libc\.musl-)[^/]*$/u;
+
+/**
+ * The C library of a Linux process report: 'glibc' when Node reports the glibc it runs on, 'musl' when the musl loader
+ * or C library is loaded (Alpine's Node), and 'unknown' otherwise, which is refused.
+ */
+export function libcOfReport(report) {
+    if (isRecord(report) && isRecord(report.header) && typeof report.header.glibcVersionRuntime === 'string') {
+        return 'glibc';
+    }
+    const sharedObjects = isRecord(report) ? report.sharedObjects : undefined;
+    if (
+        Array.isArray(sharedObjects) &&
+        sharedObjects.some((path) => typeof path === 'string' && MUSL_SHARED_OBJECT.test(path))
+    ) {
+        return 'musl';
+    }
+    return 'unknown';
+}
+
 export function detectRuntime() {
     if (process.platform !== 'linux') {
         return Object.freeze({ platform: process.platform, arch: process.arch });
     }
-    const header = process.report?.getReport()?.header;
-    const libc = isRecord(header) && typeof header.glibcVersionRuntime === 'string' ? 'glibc' : 'unknown';
-    return Object.freeze({ platform: process.platform, arch: process.arch, libc });
+    return Object.freeze({
+        platform: process.platform,
+        arch: process.arch,
+        libc: libcOfReport(process.report?.getReport()),
+    });
 }
 function runtimeKey(runtime) {
     return runtime.libc === undefined
@@ -134,8 +157,8 @@ function refuse(code, refused, runtime) {
     );
 }
 function selectExpected(runtime) {
-    if (runtime.platform === 'linux' && runtime.libc !== 'glibc') {
-        return refuse(ERROR_CODES.unsupportedLibc, `linux ${runtime.arch} without glibc`, runtime);
+    if (runtime.platform === 'linux' && runtime.libc !== 'glibc' && runtime.libc !== 'musl') {
+        return refuse(ERROR_CODES.unsupportedLibc, `linux ${runtime.arch} without glibc or musl`, runtime);
     }
     const expected = Object.hasOwn(QUALIFIED_ARTIFACTS, runtimeKey(runtime))
         ? QUALIFIED_ARTIFACTS[runtimeKey(runtime)]

@@ -1,6 +1,7 @@
 name: verify-release
 
-# Installs a published release from its own assets on all four platforms and runs it (release/verify-published.mjs).
+# Installs a published release from its own assets on all six platforms and runs it (release/verify-published.mjs); the
+# two musl archives are checked in an Alpine container on the glibc runner of their architecture.
 # The release workflow calls this after publishing; a manual run checks any tag again. It writes nothing anywhere.
 on:
     workflow_dispatch:
@@ -31,6 +32,12 @@ jobs:
                       runner: ubuntu-24.04
                     - platform: linux-arm64
                       runner: ubuntu-24.04-arm
+                    - platform: linux-x64-musl
+                      runner: ubuntu-24.04
+                      container: true
+                    - platform: linux-arm64-musl
+                      runner: ubuntu-24.04-arm
+                      container: true
                     - platform: darwin-arm64
                       runner: macos-15
                     - platform: win32-x64
@@ -48,4 +55,5 @@ jobs:
               shell: bash
               env:
                   TAG: ${{ inputs.tag }}
-              run: node release/verify-published.mjs --tag "$TAG"
+                  PLATFORM: ${{ matrix.container && matrix.platform || '' }}
+              run: node release/verify-published.mjs --tag "$TAG" ${PLATFORM:+--platform "$PLATFORM"}

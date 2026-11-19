@@ -7,10 +7,11 @@
 //   node shacl/qualification/verify-binary-reproducible.mjs <target> --out <directory> [--commit <sha>]
 //        [--source-date-epoch <seconds>]
 //
-// Linux targets build in the digest-pinned `rust:1.98.0-bookworm` image (its own architecture, never emulated);
-// Windows and macOS with the host's rustup 1.98.0. Each export is made with line-ending conversion off and must match
-// the commit's `shacl/` blobs byte for byte; the exported Cargo.lock must hash to the digest the engine identity names.
-// The binary answers the known-answer request before the record is written.
+// Linux targets build in a digest-pinned `rust` image (its own architecture, never emulated): `rust:1.98.0-bookworm`
+// for glibc, `rust:1.98.0-alpine3.22` for the static musl executables; Windows and macOS with the host's rustup
+// 1.98.0. Each export is made with line-ending conversion off and must match the commit's `shacl/` blobs byte for byte;
+// the exported Cargo.lock must hash to the digest the engine identity names. The binary answers the known-answer
+// request before the record is written.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -19,6 +20,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import {
+    BUILDER_MEMORY,
     assertNativeHost,
     cargoConfigurationFiles,
     nativeBuildEnvironment,
@@ -27,6 +29,8 @@ import {
 import { warnInJobSummary } from '../../scripts/lib/ci-warning.mjs';
 
 export const LINUX_BUILDER_IMAGE = 'rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922';
+/** `rust:1.98.0-alpine3.22`, the multi-architecture index the musl targets build in (the same Rust as above). */
+export const LINUX_MUSL_BUILDER_IMAGE = 'rust@sha256:2e452153b2dc6bed8ef123c4801cfd3f637e7c092846f974ecdce5e64af3120c';
 export const RUST_TOOLCHAIN = Object.freeze({
     rustc: '1.98.0',
     commit: '88d9e12ae178fab0fb5cc050a94da85685d449ea',
@@ -52,7 +56,15 @@ const LINKER_FLAGS = Object.freeze({ 'x86_64-pc-windows-msvc': '-C target-featur
 const DOCKER_PLATFORM = Object.freeze({
     'x86_64-unknown-linux-gnu': 'linux/amd64',
     'aarch64-unknown-linux-gnu': 'linux/arm64',
+    'x86_64-unknown-linux-musl': 'linux/amd64',
+    'aarch64-unknown-linux-musl': 'linux/arm64',
 });
+
+/** The pinned builder image of a Linux target (the Alpine one for musl), or undefined for a native target. */
+export function builderImageOf(target) {
+    if (DOCKER_PLATFORM[target] === undefined) return undefined;
+    return target.endsWith('-linux-musl') ? LINUX_MUSL_BUILDER_IMAGE : LINUX_BUILDER_IMAGE;
+}
 
 export function executableName(target) {
     return target.endsWith('-windows-msvc') ? 'erden-shacl.exe' : 'erden-shacl';
@@ -72,7 +84,7 @@ export function planBuild(target, host, paths = {}, sourceDateEpoch = DEFAULT_SO
     if (definition.builder === 'docker') {
         return {
             kind: 'docker',
-            image: LINUX_BUILDER_IMAGE,
+            image: builderImageOf(target),
             dockerPlatform: DOCKER_PLATFORM[target],
             command:
                 `export CARGO_TARGET_DIR=/target CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=${sourceDateEpoch}; ` +
@@ -183,7 +195,7 @@ export function buildOnce(target, source, targetDirectory, sourceDateEpoch) {
         const owner = typeof process.getuid === 'function' ? `${process.getuid()}:${process.getgid()}` : undefined;
         const handBack = owner === undefined ? '' : ` && chown -R ${owner} /target`;
         const output = run('docker', [
-            'run', '--rm', '--platform', plan.dockerPlatform,
+            'run', '--rm', '--platform', plan.dockerPlatform, '--memory', BUILDER_MEMORY, '--memory-swap', BUILDER_MEMORY,
             '--mount', `type=bind,source=${source},target=/work,readonly`,
             '--mount', `type=bind,source=${targetDirectory},target=/target`,
             '--workdir', '/work', plan.image,

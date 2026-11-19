@@ -1,7 +1,8 @@
 // Builds one reasoner target twice, from two separate `git archive` exports of the qualification source commit, on
-// a native host for that target, and proves the two release executables byte-identical. Linux targets build in the
-// pinned `rust` image (its own architecture's variant, never emulated); Windows and macOS build with the host's
-// rustup toolchain. The record and binary it writes are the inputs a mint copies into the platform packages.
+// a native host for that target, and proves the two release executables byte-identical. Linux targets build in a
+// pinned `rust` image (its own architecture's variant, never emulated): the Debian one for glibc, the Alpine one for
+// the static musl executables; Windows and macOS build with the host's rustup toolchain. The record and binary it
+// writes are the inputs a mint copies into the platform packages.
 //
 //   node reasoner/qualification/verify-binary-reproducible.mjs <target> --out <directory>
 //        [--commit <sha>] [--source-date-epoch <seconds>]
@@ -26,6 +27,12 @@ import { REASONER_TOOL } from '../distribution/src/index.js';
 import { warnInJobSummary } from '../../scripts/lib/ci-warning.mjs';
 
 export const LINUX_BUILDER_IMAGE = 'rust@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc';
+/**
+ * `rust:1.96.0-alpine3.22`, the multi-architecture index: the musl targets build in it. Its Rust is the same toolchain
+ * as the Debian image's (RUST_TOOLCHAIN); musl links the executable statically, so it runs on any Linux of its
+ * architecture, Alpine and glibc distributions alike.
+ */
+export const LINUX_MUSL_BUILDER_IMAGE = 'rust@sha256:8c6ab6493f2e93ee7c21781bc599a7e07278aceb15fefb968144d7e4cf8c9a04';
 export const RUST_TOOLCHAIN = Object.freeze({
   rustc: '1.96.0',
   commit: 'ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96',
@@ -45,8 +52,10 @@ const LINUX_RUSTFLAGS =
   '-C link-arg=-Wl,--build-id=none --remap-path-prefix=/work=/erden-reasoner --remap-path-prefix=/usr/local/cargo=/cargo';
 
 const TARGETS = Object.freeze({
-  'x86_64-unknown-linux-gnu': { host: { platform: 'linux', arch: 'x64' }, builder: 'docker', dockerPlatform: 'linux/amd64' },
-  'aarch64-unknown-linux-gnu': { host: { platform: 'linux', arch: 'arm64' }, builder: 'docker', dockerPlatform: 'linux/arm64' },
+  'x86_64-unknown-linux-gnu': { host: { platform: 'linux', arch: 'x64' }, builder: 'docker', dockerPlatform: 'linux/amd64', image: LINUX_BUILDER_IMAGE },
+  'aarch64-unknown-linux-gnu': { host: { platform: 'linux', arch: 'arm64' }, builder: 'docker', dockerPlatform: 'linux/arm64', image: LINUX_BUILDER_IMAGE },
+  'x86_64-unknown-linux-musl': { host: { platform: 'linux', arch: 'x64' }, builder: 'docker', dockerPlatform: 'linux/amd64', image: LINUX_MUSL_BUILDER_IMAGE },
+  'aarch64-unknown-linux-musl': { host: { platform: 'linux', arch: 'arm64' }, builder: 'docker', dockerPlatform: 'linux/arm64', image: LINUX_MUSL_BUILDER_IMAGE },
   // The static CRT, so the executable needs no Visual C++ Redistributable (VCRUNTIME140.dll) on the user's machine.
   'x86_64-pc-windows-msvc': { host: { platform: 'win32', arch: 'x64' }, builder: 'native', linkerFlags: '-C target-feature=+crt-static -C link-arg=/Brepro ' },
   'aarch64-apple-darwin': { host: { platform: 'darwin', arch: 'arm64' }, builder: 'native', linkerFlags: '' },
@@ -58,6 +67,13 @@ export function rustflagsRecordOf(target) {
   const definition = TARGETS[target];
   if (definition === undefined) throw new Error(`Unsupported target ${target}`);
   return definition.builder === 'docker' ? LINUX_RUSTFLAGS : `${definition.linkerFlags}${REMAP_RECORD}`;
+}
+
+/** The pinned builder image of a Linux target (the Alpine one for musl), or undefined for a native target. */
+export function builderImageOf(target) {
+  const definition = TARGETS[target];
+  if (definition === undefined) throw new Error(`Unsupported target ${target}`);
+  return definition.builder === 'docker' ? definition.image : undefined;
 }
 
 export function executableName(target) {
@@ -86,7 +102,7 @@ export function planBuild(target, host, paths = {}, sourceDateEpoch = DEFAULT_SO
   if (definition.builder === 'docker') {
     return {
       kind: 'docker',
-      image: LINUX_BUILDER_IMAGE,
+      image: definition.image,
       dockerPlatform: definition.dockerPlatform,
       command:
         `export CARGO_TARGET_DIR=/target CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=${sourceDateEpoch}; ` +

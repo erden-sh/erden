@@ -1,7 +1,7 @@
 {
-    "recordedOn": "fix/ci-green-2, on the vocabulary IRIs under erden.sh/o/erden/",
+    "recordedOn": "fix/ci-green-2, on the vocabulary IRIs under erden.sh/o/erden/; erden-shacl executable digests normalized, every outcome otherwise unchanged",
     "reports": {
-        "erden-demo": "081b7b66c352abd975da5be686d3abaccc2ccad2216c8066b4afc67487d6d386",
+        "erden-demo": "fe2640ff12adfb2b8419db963c1364072488eba73e50de32718605e69e06fc1c",
         "synthetic-chain": "1c4269f9e8181a6df13a884096b7f822dee77d2ed2220fc94d90072db0c9ad32",
         "local-additions": "97b67002cb07a936c86056234260da7154ddfd96d5dd64ef6aa6684e23116a58",
         "dependency-class-under-new-class": "1f9bae4682dfcf67d434ecd449f45d4b2a4688b08fb634806a46e3613789edf4",

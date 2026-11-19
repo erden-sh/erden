@@ -4,17 +4,19 @@
 // integrity error. The install script is written for the archive's own build record, so this runs before the pins
 // are committed (in the mint) as well as after.
 //
-// On Linux (`--container`) everything runs in a pinned Ubuntu image with networking disabled (`--network none`) and
-// no Node.js of its own, as an unprivileged user; elsewhere it runs on the host with a temporary home.
+// On Linux (`--container`) everything runs in a pinned Ubuntu image, or for a musl archive a pinned Alpine image with
+// only the C++ runtime added (`apk add libstdc++ libgcc`, as Node.js on Alpine needs), with networking disabled
+// (`--network none`) and no Node.js of its own, as an unprivileged user. A musl archive of the other architecture runs
+// under QEMU with `--allow-emulation`, for a local rehearsal. Elsewhere it runs on the host with a temporary home.
 //
-// Usage: node release/test-install.mjs --archive <file> --record <platform>.json [--container]
+// Usage: node release/test-install.mjs --archive <file> --record <platform>.json [--container [--allow-emulation]]
 import { spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
-import { assertPinned } from './lib/platforms.mjs';
+import { RELEASE_PLATFORMS, assertPinned } from './lib/platforms.mjs';
 import { installScripts } from './write-install-scripts.mjs';
 
 const release = import.meta.dirname;
@@ -22,11 +24,17 @@ const repository = resolve(release, '..');
 /** Ubuntu 24.04 (glibc 2.39, no Node.js), by digest. */
 export const INSTALL_TEST_IMAGE =
     'ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55';
+/** Alpine 3.22 (musl 1.2.5, no Node.js), by digest; the musl install test adds libstdc++ to it. */
+export const MUSL_INSTALL_TEST_IMAGE =
+    'alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f';
+const DOCKER_PLATFORMS = Object.freeze({ x64: 'linux/amd64', arm64: 'linux/arm64' });
 
 /** The steps a user runs after installing, as a POSIX shell script; `$1` is the demo directory. */
 const POSIX_STEPS = `#!/bin/sh
 # Runs the installed CLI on a copy of the demo project, then refuses a reasoner changed by one byte.
 set -eu
+# A test run never sends telemetry.
+export DO_NOT_TRACK=1
 erden="$HOME/.local/bin/erden"
 work=$(mktemp -d)
 cp -R "$1" "$work/demo"
@@ -67,7 +75,13 @@ function windowsSteps(target, demo) {
             process.env.ComSpec ?? 'cmd.exe',
             ['/d', '/s', '/c', `""${join(target, 'bin', `${name}.cmd`)}" ${args}"`],
             // `/s /c` takes off the outer quotes, and the launcher keeps its own; Node's quoting would escape them.
-            { cwd: work, encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: true },
+            {
+                cwd: work,
+                encoding: 'utf8',
+                env: { ...process.env, DO_NOT_TRACK: '1' },
+                windowsHide: true,
+                windowsVerbatimArguments: true,
+            },
         );
     }
     const help = erden('help');
@@ -110,13 +124,41 @@ function windowsSteps(target, demo) {
 }
 
 function run(command, args, options = {}) {
-    const child = spawnSync(command, args, { encoding: 'utf8', maxBuffer: 1 << 26, ...options });
+    const child = spawnSync(command, args, {
+        encoding: 'utf8',
+        maxBuffer: 1 << 26,
+        ...options,
+        env: { ...(options.env ?? process.env), DO_NOT_TRACK: '1' },
+    });
     if (child.status !== 0) {
         throw new Error(
             `${command} ${args.join(' ')} failed (${String(child.status)}):\n${child.stderr}${child.stdout}`,
         );
     }
     return child.stdout;
+}
+
+/**
+ * The `docker run` platform arguments and image for a Linux archive: Ubuntu for glibc; for musl, Alpine with
+ * libstdc++, built here (with the network) as a local image named by the base digest.
+ */
+export function containerArguments(platformName, allowEmulation) {
+    const platform = RELEASE_PLATFORMS[platformName];
+    if (platform?.os !== 'linux') {
+        throw new Error(`--container installs a Linux archive, not ${platformName}`);
+    }
+    if (platform.cpu !== process.arch && !allowEmulation) {
+        throw new Error(`${platformName} runs only on a ${platform.cpu} host (or with --allow-emulation)`);
+    }
+    const dockerPlatform = ['--platform', DOCKER_PLATFORMS[platform.cpu]];
+    if (platform.libc !== 'musl') {
+        return { platform: dockerPlatform, image: INSTALL_TEST_IMAGE };
+    }
+    const tag = `erden-install-test-musl:${MUSL_INSTALL_TEST_IMAGE.slice(-12)}-${platform.cpu}`;
+    run('docker', ['build', '--quiet', ...dockerPlatform, '--tag', tag, '-'], {
+        input: `FROM ${MUSL_INSTALL_TEST_IMAGE}\nRUN apk add --no-cache libstdc++ libgcc\n`,
+    });
+    return { platform: dockerPlatform, image: tag };
 }
 
 /** The pins of one built archive, enough to write install scripts that accept exactly it. */
@@ -168,6 +210,7 @@ function main() {
             archive: { type: 'string' },
             record: { type: 'string' },
             container: { type: 'boolean', default: false },
+            'allow-emulation': { type: 'boolean', default: false },
         },
     });
     if (values.archive === undefined || values.record === undefined) {
@@ -188,18 +231,22 @@ function main() {
         chmodSync(join(input, 'steps.sh'), 0o755);
         let output;
         if (values.container) {
+            const { platform, image } = containerArguments(record.platform, values['allow-emulation']);
             output = run('docker', [
                 'run',
                 '--rm',
+                ...platform,
                 '--network',
                 'none',
                 '--user',
                 '1000:1000',
                 '--env',
                 'HOME=/tmp/home',
+                '--env',
+                'DO_NOT_TRACK=1',
                 '--volume',
                 `${input}:/in:ro`,
-                INSTALL_TEST_IMAGE,
+                image,
                 'sh',
                 '-c',
                 `mkdir -p /tmp/home && sh /in/install.sh --archive /in/${basename(values.archive)} && sh /in/steps.sh /in/demo`,
@@ -220,7 +267,7 @@ function main() {
         } else {
             const home = join(work, 'home');
             mkdirSync(home);
-            const env = { ...process.env, HOME: home };
+            const env = { ...process.env, HOME: home, DO_NOT_TRACK: '1' };
             run('sh', [join(input, 'install.sh'), '--archive', join(input, basename(values.archive))], { env });
             output = run('sh', [join(input, 'steps.sh'), join(input, 'demo')], { env });
         }

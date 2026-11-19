@@ -14,12 +14,12 @@
   "target": "x86_64-pc-windows-msvc",
   "binary": {
     "path": "bin/erden-shacl.exe",
-    "bytes": 13990400,
-    "sha256": "sha256:43eb5fc2fa27572fa7e5f2edae28d1a6348527e207b786b38d2f922207978135"
+    "bytes": 13997056,
+    "sha256": "sha256:ebbbf784b6051b69d2f20a1205073c1a289911985b795ff4c14bea0e955952a9"
   },
   "knownAnswer": {
     "fixture": "core-and-sparql",
     "responseBytes": 2202,
-    "responseSha256": "sha256:8dbe07ceafb1d06b3726dab240a9fd63080f2e1791d154039e48337058b6cde3"
+    "responseSha256": "sha256:18c84780833bcb127234238d9444f1b734de40f1a731bffb6f781b79487715e6"
   }
 }

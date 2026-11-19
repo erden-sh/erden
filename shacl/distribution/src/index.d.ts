@@ -69,6 +69,8 @@ export interface QualifiedShaclTool {
 }
 
 export declare const detectRuntime: () => Readonly<RuntimeIdentity>;
+/** The C library a Linux process report names: 'glibc', 'musl', or 'unknown' (refused). */
+export declare const libcOfReport: (report: unknown) => 'glibc' | 'musl' | 'unknown';
 export declare const resolveBundledShaclEngine: (options?: ResolverOptions) => Readonly<{
     path: string;
     tool: Readonly<QualifiedShaclTool>;

@@ -1,4 +1,8 @@
 export declare const LINUX_BUILDER_IMAGE: string;
+/** The pinned Alpine `rust` image the musl targets build in. */
+export declare const LINUX_MUSL_BUILDER_IMAGE: string;
+/** The pinned builder image of a Linux target, or undefined for a native (Windows or macOS) target. */
+export declare const builderImageOf: (target: string) => string | undefined;
 export declare const RUST_TOOLCHAIN: Readonly<{ rustc: string; commit: string; llvm: string }>;
 export declare const REPRODUCIBLE_TARGETS: ReadonlyArray<string>;
 /** The flags a build record of `target` names (`rustflags`), on any host. */

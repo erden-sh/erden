@@ -16,11 +16,11 @@
   "binary": {
     "path": "bin/erden-reasoner.exe",
     "bytes": 1848832,
-    "sha256": "sha256:2f285f46fbbc4222599023ceff0cfddfeb91b3337bb6ae1447cb179eb48d94d8"
+    "sha256": "sha256:2ab7f70180f5861ad68c18930d5bc68014d481e26d44b0dc78168ad8ea2eaa15"
   },
   "knownAnswer": {
     "fixture": "subclass-type",
     "responseBytes": 2299,
-    "responseSha256": "sha256:08a025b971f8aa93a9e03c30bf0950e206354357cbedf9d80f9f33da32ae1b82"
+    "responseSha256": "sha256:d96702e868f79573daa5db633d6abc64ab5486988b9dfdb4dd0fd460f41a1326"
   }
 }

@@ -209,6 +209,8 @@ describe('open workspace guard', () => {
             'reasoner/linux-arm64-gnu',
             'reasoner/darwin-arm64',
             'reasoner/win32-x64-msvc',
+            'reasoner/linux-x64-musl',
+            'reasoner/linux-arm64-musl',
         ]) {
             assert.equal(profile.platformPackages.get(path).version, '0.3.0+purrdf.0.12.0.dfb1df7');
         }
@@ -257,7 +259,14 @@ describe('open pack guard', () => {
                 .length,
             1,
         );
-        for (const platform of ['linux-x64-gnu', 'linux-arm64-gnu', 'darwin-arm64', 'win32-x64-msvc']) {
+        for (const platform of [
+            'linux-x64-gnu',
+            'linux-arm64-gnu',
+            'linux-x64-musl',
+            'linux-arm64-musl',
+            'darwin-arm64',
+            'win32-x64-msvc',
+        ]) {
             const files = ['LICENSE', 'NOTICE', 'README.md', 'THIRD-PARTY-NOTICES.md', 'metadata.json', 'package.json'];
             const path = `reasoner/${platform}`;
             assert.deepEqual(

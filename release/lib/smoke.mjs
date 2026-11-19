@@ -10,7 +10,14 @@ import { join } from 'node:path';
 function erden(root, args, home, cwd, name = 'erden') {
     const windows = process.platform === 'win32';
     const launcher = join(root, 'bin', windows ? `${name}.cmd` : name);
-    const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, '.config') };
+    // DO_NOT_TRACK: a smoke run never sends telemetry.
+    const env = {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        XDG_CONFIG_HOME: join(home, '.config'),
+        DO_NOT_TRACK: '1',
+    };
     delete env.ERDEN_REASONER_BIN;
     const child = windows
         ? spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `""${launcher}" ${args.join(' ')}"`], {

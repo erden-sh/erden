@@ -138,7 +138,7 @@ describe('determinism normalization', () => {
 });
 
 describe('determinism comparison', () => {
-  // A two-request set answered by four fake platforms, from the protocol fixtures.
+  // A two-request set answered by every platform, faked from the protocol fixtures.
   function fakeRun(mutate?: { target: string; from: string; to: string }) {
     const root = mkdtempSync(join(temporary, 'compare-'));
     const requests = join(root, 'requests');

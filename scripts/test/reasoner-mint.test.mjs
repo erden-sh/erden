@@ -18,6 +18,7 @@ import {
 } from '../../reasoner/qualification/finalize-artifacts.mjs';
 import {
     LINUX_BUILDER_IMAGE,
+    LINUX_MUSL_BUILDER_IMAGE,
     RUST_TOOLCHAIN,
     rustflagsRecordOf,
 } from '../../reasoner/qualification/verify-binary-reproducible.mjs';
@@ -199,4 +200,49 @@ test('the mint refuses a build that is not two identical clean builds of the qua
         () => assertBuildRecord(linux, record(binary), Buffer.from('swapped!'), 'tree'),
         /not the built one/u,
     );
+});
+
+test('a musl build is minted only from the pinned Alpine builder image, a glibc one only from the Debian one', () => {
+    const binary = Buffer.from('reasoner');
+    for (const target of ['x86_64-unknown-linux-musl', 'aarch64-unknown-linux-musl']) {
+        const platform = PLATFORMS.find((item) => item.target === target);
+        assert.equal(platform.runtime.libc, 'musl');
+        const musl = record(binary, {
+            target,
+            builderImage: LINUX_MUSL_BUILDER_IMAGE,
+            rustflags: rustflagsRecordOf(target),
+        });
+        assertBuildRecord(platform, musl, binary, 'tree');
+        assert.throws(
+            () => assertBuildRecord(platform, { ...musl, builderImage: LINUX_BUILDER_IMAGE }, binary, 'tree'),
+            /not the pinned builder image/u,
+        );
+    }
+    assert.throws(
+        () => assertBuildRecord(linux, record(binary, { builderImage: LINUX_MUSL_BUILDER_IMAGE }), binary, 'tree'),
+        /not the pinned builder image/u,
+    );
+});
+
+test('the six platforms are the glibc ones first, then musl, with one package and target each', () => {
+    assert.deepEqual(
+        PLATFORMS.map((platform) => platform.key),
+        ['linux:x64:glibc', 'linux:arm64:glibc', 'darwin:arm64', 'win32:x64', 'linux:x64:musl', 'linux:arm64:musl'],
+    );
+    assert.equal(new Set(PLATFORMS.map((platform) => platform.target)).size, 6);
+    assert.equal(new Set(PLATFORMS.map((platform) => platform.packageName)).size, 6);
+});
+
+test('a release reuses the pins only once every platform is minted', () => {
+    const matches = spawnSync(
+        process.execPath,
+        [resolve(root, 'reasoner/qualification/finalize-artifacts.mjs'), '--matches-source'],
+        { encoding: 'utf8' },
+    );
+    const record = JSON.parse(readFileSync(resolve(root, 'reasoner/qualification/mint.json'), 'utf8'));
+    const unminted = PLATFORMS.filter((platform) => record.targets[platform.target] === undefined);
+    if (unminted.length > 0) {
+        assert.notEqual(matches.status, 0);
+        assert.match(matches.stderr, /not minted yet; the next mint builds all 6 targets/u);
+    }
 });

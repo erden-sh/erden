@@ -39,11 +39,14 @@ export const DETERMINISM_TARGETS = Object.freeze([
   'aarch64-unknown-linux-gnu',
   'x86_64-pc-windows-msvc',
   'aarch64-apple-darwin',
+  'x86_64-unknown-linux-musl',
+  'aarch64-unknown-linux-musl',
 ]);
 const REFERENCE_TARGET = 'x86_64-unknown-linux-gnu';
 /**
  * Targets built natively, with the runner image's linker and system libraries, which no pin covers. Their differences are
- * reported as warnings and do not fail a run; the Linux targets build in the pinned builder image and stay strict.
+ * reported as warnings and do not fail a run; the Linux targets, glibc and musl, build in pinned builder images and stay
+ * strict.
  */
 export const NATIVE_TARGETS = Object.freeze(['x86_64-pc-windows-msvc', 'aarch64-apple-darwin']);
 const REQUESTS_SCHEMA = 'erden.reasoner-determinism-requests/v1';
