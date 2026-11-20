@@ -392,6 +392,9 @@ jobs:
               env:
                   HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
                   SCOOP_BUCKET_DEPLOY_KEY: ${{ secrets.SCOOP_BUCKET_DEPLOY_KEY }}
+                  # Authenticates the host-key lookup below: unauthenticated api.github.com calls from shared runner IPs hit
+                  # the rate limit (HTTP 403 on the v0.2.0 run).
+                  GH_TOKEN: ${{ github.token }}
               run: |
                   version="${GITHUB_REF_NAME#v}"
                   publish() {
@@ -420,7 +423,7 @@ jobs:
                       unset GIT_SSH_COMMAND
                   }
                   # GitHub's published SSH host keys (https://api.github.com/meta), so the clone trusts only github.com.
-                  curl -fsSL -A 'erden-release/1' https://api.github.com/meta \
+                  gh api meta \
                       | node -e "const m = JSON.parse(require('fs').readFileSync(0, 'utf8')); console.log(m.ssh_keys.map((k) => 'github.com ' + k).join('\n'))" \
                       > "$RUNNER_TEMP/known_hosts"
                   publish homebrew-tap "$HOMEBREW_TAP_DEPLOY_KEY" Formula/erden.rb
