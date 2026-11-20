@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
+import { MUSL_BUILD_IMAGE } from '../../release/build-musl-archive.mjs';
 import {
     collectEntries,
     gzipBytes,
@@ -344,15 +345,29 @@ test('the Node.js runtime pins name the Node.js archive of each release platform
     for (const [platform, pin] of Object.entries(runtime.platforms)) {
         assert.match(pin.sha256, /^sha256:[0-9a-f]{64}$/u, platform);
         assert.ok(Number.isSafeInteger(pin.bytes) && pin.bytes > 0, platform);
-        assert.ok(pin.file.startsWith(`node-v${runtime.version}-`), platform);
+        assert.ok(pin.file.startsWith(`node-v${runtime.version}`), platform);
     }
     assert.equal(hostPlatform({ platform: 'linux', arch: 'x64' }), 'linux-x64');
     assert.equal(hostPlatform({ platform: 'linux', arch: 'x64', libc: 'musl' }), 'linux-x64-musl');
     assert.equal(hostPlatform({ platform: 'linux', arch: 'arm64', libc: 'musl' }), 'linux-arm64-musl');
     assert.equal(hostPlatform({ platform: 'darwin', arch: 'x64' }), undefined);
-    // nodejs.org publishes no musl build; the musl archives ship the Node.js project's unofficial builds.
+    // nodejs.org publishes no musl build: linux-x64-musl ships the Node.js project's unofficial build. linux-arm64-musl
+    // ships the Node.js of the pinned musl build image, as postject cannot inject into the unofficial non-PIE build,
+    // with the LICENSE of the official source tarball, its pinned file.
     for (const [platform, pin] of Object.entries(runtime.platforms)) {
+        if (platform === 'linux-arm64-musl') {
+            assert.equal(pin.baseUrl, undefined);
+            assert.equal(pin.file, `node-v${runtime.version}.tar.xz`);
+            assert.equal(pin.executable, undefined);
+            assert.deepEqual(Object.keys(pin.imageExecutable).sort(), ['bytes', 'image', 'path', 'sha256']);
+            assert.equal(pin.imageExecutable.image, MUSL_BUILD_IMAGE);
+            assert.equal(pin.imageExecutable.path, '/usr/local/bin/node');
+            assert.match(pin.imageExecutable.sha256, /^sha256:[0-9a-f]{64}$/u);
+            assert.ok(Number.isSafeInteger(pin.imageExecutable.bytes) && pin.imageExecutable.bytes > 0);
+            continue;
+        }
         const musl = RELEASE_PLATFORMS[platform].libc === 'musl';
+        assert.equal(pin.imageExecutable, undefined, platform);
         assert.equal(
             pin.baseUrl,
             musl ? `https://unofficial-builds.nodejs.org/download/release/v${runtime.version}/` : undefined,
