@@ -110,11 +110,16 @@ async function initFixture(parent: string): Promise<string> {
     return target;
 }
 
+/** apps/cli/package.json's version, which the CLI prints. */
+const CLI_VERSION = (
+    JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string }
+).version;
+
 describe('erden CLI adapter', () => {
     it.each(['--version', '-V', 'version'])('prints the package version for %s', async (flag) => {
         const captured = captureRuntime(tempRoot());
         expect(await runCli([flag], captured.runtime)).toBe(CLI_EXIT.success);
-        expect(captured.stdout).toEqual(['0.1.0\n']);
+        expect(captured.stdout).toEqual([`${CLI_VERSION}\n`]);
         expect(captured.stderr).toEqual([]);
     });
 
