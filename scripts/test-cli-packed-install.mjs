@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { QUALIFIED_REASONER_ARTIFACTS, detectRuntime } from '../reasoner/distribution/src/index.js';
 
+import { packExactVersion } from './lib/exact-pack.mjs';
 import { cleanupTestTempRoot, makeTestTempRoot } from './lib/test-temp-root.mjs';
 
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -97,16 +98,6 @@ function requireCliSuccess(result, label, installRoot) {
     return result.stdout;
 }
 
-function parsePackResult(stdout) {
-    for (const marker of ['\n{\n  "name":', '\n[\n  {']) {
-        const index = stdout.lastIndexOf(marker);
-        if (index >= 0) {
-            return JSON.parse(stdout.slice(index + 1));
-        }
-    }
-    return JSON.parse(stdout);
-}
-
 function isContained(root, candidate) {
     const fragment = relative(root, candidate);
     return (
@@ -121,18 +112,11 @@ const installRoots = [];
 try {
     const packs = [];
     for (const packagePath of packagePaths) {
-        const output = requireSuccess(
-            command('pnpm', ['pack', '--json', '--pack-destination', packRoot], {
-                cwd: resolve(workspaceRoot, packagePath),
-            }),
-            `pack ${packagePath}`,
-        ).stdout;
-        const record = parsePackResult(output);
-        const tarball = resolve(packRoot, record.filename);
-        if (!isContained(packRoot, tarball) || !existsSync(tarball)) {
+        const record = packExactVersion(resolve(workspaceRoot, packagePath), packRoot);
+        if (!isContained(packRoot, record.tarball) || !existsSync(record.tarball)) {
             throw new Error(`pack ${packagePath} returned a tarball outside the pack root`);
         }
-        packs.push({ name: record.name, tarball });
+        packs.push({ name: record.name, tarball: record.tarball });
     }
 
     for (const manager of ['npm', 'pnpm']) {
@@ -148,14 +132,18 @@ try {
                     name: `erden-cli-${manager}-install-test`,
                     version: '0.0.0',
                     private: true,
-                    packageManager: 'pnpm@10.15.0',
+                    packageManager: 'pnpm@12.21.0',
                     dependencies: localPackages,
-                    ...(manager === 'pnpm' ? { pnpm: { overrides: localPackages } } : {}),
                 },
                 null,
                 2,
             )}\n`,
         );
+        if (manager === 'pnpm') {
+            // pnpm 11 and later read overrides only from pnpm-workspace.yaml, not from package.json's pnpm field.
+            // JSON is YAML, so the tarball paths need no further quoting.
+            writeFileSync(resolve(installRoot, 'pnpm-workspace.yaml'), `overrides: ${JSON.stringify(localPackages)}\n`);
+        }
         const installArguments =
             manager === 'npm'
                 ? ['install', '--ignore-scripts', '--no-audit', '--no-fund']

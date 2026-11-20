@@ -39,8 +39,8 @@ function createWorkspace(context, profile = OPEN_WORKSPACE_PROFILE) {
         name: 'erden',
         version: '0.0.0',
         private: true,
-        packageManager: 'pnpm@10.15.0',
-        engines: { node: '^24', pnpm: '10.15.0' },
+        packageManager: 'pnpm@12.21.0',
+        engines: { node: '^24', pnpm: '12.21.0' },
         devDependencies: Object.fromEntries([...profile.rootDevDependencyPins].filter(([name]) => name !== 'effect')),
     });
     const versions = new Map();

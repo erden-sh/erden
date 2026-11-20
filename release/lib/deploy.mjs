@@ -10,14 +10,26 @@ import { sha256 } from './platforms.mjs';
 /**
  * Prepare the temporary export for pnpm's frozen, dedicated deploy lockfile. Its projection handles workspace
  * links, but requires the injection setting. No importer, dependency resolution or integrity value is changed.
+ * pnpm 11 and later write the pinned pnpm and its integrity as a first YAML document; it is kept as written, and the
+ * dependency lockfile is the last document.
  */
 export function prepareLockedDeployment(source) {
     const path = join(source, 'pnpm-lock.yaml');
     const text = readFileSync(path, 'utf8');
     const yaml = createRequire(join(source, 'packages/contracts/package.json'))('yaml');
-    const lockfile = yaml.parse(text);
+    const documents = yaml.parseAllDocuments(text);
+    const failed = documents.find((document) => document.errors.length > 0);
+    if (failed !== undefined) {
+        throw failed.errors[0];
+    }
+    const last = documents.at(-1);
+    const lockfile = last?.toJS();
+    if (typeof lockfile?.lockfileVersion !== 'string' || lockfile.importers === undefined) {
+        throw new Error('pnpm-lock.yaml does not end with a dependency lockfile');
+    }
     lockfile.settings = { ...lockfile.settings, injectWorkspacePackages: true };
-    writeFileSync(path, yaml.stringify(lockfile));
+    const marker = last.directives?.docStart === true ? '---\n' : '';
+    writeFileSync(path, `${text.slice(0, last.range[0])}${marker}${yaml.stringify(lockfile)}`);
     return { lockfile, digest: sha256(text) };
 }
 

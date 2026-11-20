@@ -3,3 +3,18 @@ packages:
     - 'packages/*'
     - 'reasoner/*'
     - 'shacl/*'
+
+# pnpm 11 and later read only auth and registry settings from .npmrc; the rest live here.
+engineStrict: true
+saveExact: true
+
+# No dependency runs install scripts, as under pnpm 10, which ran none it was not told to. pnpm 11 and later fail an
+# install, even with --ignore-scripts, on a dependency that has scripts but is not listed here. esbuild's binary comes
+# from its platform package, and msgpackr-extract is msgpackr's optional native speedup.
+allowBuilds:
+    esbuild: false
+    msgpackr-extract: false
+
+# pnpm 11 and later install before every `pnpm run` whose dependencies look out of date, without --ignore-scripts and
+# online. Every job installs explicitly (frozen, --ignore-scripts, and offline in the archive build), as under pnpm 10.
+verifyDepsBeforeRun: false

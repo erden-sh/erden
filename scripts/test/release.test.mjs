@@ -25,7 +25,7 @@ import {
     zipBytes,
 } from '../../release/lib/archive.mjs';
 import { SIDECAR_URL_MODULES, sidecarPackages } from '../../release/lib/bundle.mjs';
-import { normalizeDeployedWorkspace } from '../../release/lib/deploy.mjs';
+import { normalizeDeployedWorkspace, prepareLockedDeployment } from '../../release/lib/deploy.mjs';
 import { declaredLicense, writeNpmNotices } from '../../release/lib/notices.mjs';
 import { RELEASE_PLATFORMS, archiveName, assertPinned, hostPlatform, sha256 } from '../../release/lib/platforms.mjs';
 import { pruneDeployedTree } from '../../release/lib/prune.mjs';
@@ -74,6 +74,61 @@ function deploymentFixture(context, buildPath) {
         lockfile: { packages: { 'effect@4.0.0-rc.111': { resolution: { integrity: 'fixture' } } } },
     };
 }
+
+test('locked deployment keeps the pnpm environment document and sets injection on the dependency lockfile', (context) => {
+    const source = temporary('lockfile-documents');
+    context.after(() => rmSync(source, { recursive: true, force: true }));
+    mkdirSync(join(source, 'packages/contracts'), { recursive: true });
+    writeFileSync(join(source, 'packages/contracts/package.json'), '{}');
+    symlinkSync(join(root, 'packages/contracts/node_modules'), join(source, 'packages/contracts/node_modules'), 'dir');
+    const environment = [
+        '---',
+        "lockfileVersion: '9.0'",
+        '',
+        'importers:',
+        '',
+        '  .:',
+        '    packageManagerDependencies:',
+        '      pnpm:',
+        '        specifier: 12.21.0',
+        '        version: 12.21.0',
+        '',
+        'packages:',
+        '',
+        '  pnpm@12.21.0:',
+        '    resolution: {integrity: sha512-fixture}',
+        '',
+        '---',
+        '',
+    ].join('\n');
+    const dependencies = [
+        "lockfileVersion: '9.0'",
+        '',
+        'settings:',
+        '  autoInstallPeers: true',
+        '',
+        'importers:',
+        '',
+        '  .: {}',
+        '',
+        'packages:',
+        '',
+        '  effect@4.0.0-rc.111:',
+        '    resolution: {integrity: sha512-effect}',
+        '',
+    ].join('\n');
+    const text = `${environment}${dependencies}`;
+    writeFileSync(join(source, 'pnpm-lock.yaml'), text);
+    const prepared = prepareLockedDeployment(source);
+    assert.equal(prepared.digest, sha256(text));
+    assert.deepEqual(Object.keys(prepared.lockfile.packages), ['effect@4.0.0-rc.111']);
+    const written = readFileSync(join(source, 'pnpm-lock.yaml'), 'utf8');
+    assert.ok(written.startsWith(environment));
+    const documents = YAML.parseAllDocuments(written).map((document) => document.toJS());
+    assert.equal(documents.length, 2);
+    assert.equal(documents[0].packages['pnpm@12.21.0'].resolution.integrity, 'sha512-fixture');
+    assert.deepEqual(documents[1].settings, { autoInstallPeers: true, injectWorkspacePackages: true });
+});
 
 test('locked deployment produces portable metadata independent of its temporary build path', (context) => {
     const first = deploymentFixture(context, '/build/a');

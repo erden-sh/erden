@@ -6,7 +6,8 @@ import { QUALIFIED_REASONER_ARTIFACTS, REASONER_RELEASED } from '../../reasoner/
 
 export const EXPECTED_NODE_ENGINE_RANGE = '^24';
 export const EXPECTED_NODE_TOOLCHAIN_VERSION = '24.17.0';
-export const EXPECTED_PACKAGE_MANAGER = 'pnpm@10.15.0';
+export const EXPECTED_PNPM_VERSION = '12.21.0';
+export const EXPECTED_PACKAGE_MANAGER = `pnpm@${EXPECTED_PNPM_VERSION}`;
 export const REASONER_DISTRIBUTION_VERSION = '0.3.0+purrdf.0.12.0.dfb1df7';
 export const SHACL_DISTRIBUTION_VERSION = '0.1.0+purrdf.3.0.1';
 
@@ -677,8 +678,8 @@ export function inspectWorkspace(root, profile = OPEN_WORKSPACE_PROFILE) {
     if (rootManifest.packageManager !== EXPECTED_PACKAGE_MANAGER) {
         failures.push(`package.json must pin packageManager to ${EXPECTED_PACKAGE_MANAGER}`);
     }
-    if (rootManifest.engines?.pnpm !== '10.15.0') {
-        failures.push('package.json must pin engines.pnpm to 10.15.0');
+    if (rootManifest.engines?.pnpm !== EXPECTED_PNPM_VERSION) {
+        failures.push(`package.json must pin engines.pnpm to ${EXPECTED_PNPM_VERSION}`);
     }
     for (const [name, version] of profile.rootDevDependencyPins) {
         if (name === 'effect') {

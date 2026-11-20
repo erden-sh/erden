@@ -17,6 +17,7 @@ import { pathToFileURL } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { packExactVersion } from '../../../scripts/lib/exact-pack.mjs';
 import {
     BundledReasonerError,
     ERROR_CODES,
@@ -111,44 +112,13 @@ function run(command: string, args: ReadonlyArray<string>, cwd?: string) {
     }
     return child.stdout;
 }
-function isPackRecord(value: unknown): value is {
-    filename: string;
-    version: string;
-} {
-    return (
-        typeof value === 'object' &&
-        value !== null &&
-        'filename' in value &&
-        typeof value.filename === 'string' &&
-        'version' in value &&
-        typeof value.version === 'string'
-    );
-}
-
 function packPackage(name: keyof typeof packageDirectories, destination: string): PackedPackage {
     mkdirSync(destination, { recursive: true });
-    const packageManager = 'pnpm';
-    const args = ['pack', '--json', '--pack-destination', destination];
-    const child =
-        process.platform === 'win32'
-            ? spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `${packageManager} ${args.join(' ')}`], {
-                  cwd: packageDirectories[name],
-                  encoding: 'utf8',
-              })
-            : spawnSync(packageManager, args, { cwd: packageDirectories[name], encoding: 'utf8' });
-    if (child.status !== 0) {
-        throw new Error(`npm pack failed: ${child.stderr || child.stdout}`);
-    }
-    const result: unknown = JSON.parse(child.stdout);
-    const record = Array.isArray(result) ? (result as ReadonlyArray<unknown>)[0] : result;
-    if (!isPackRecord(record)) {
-        throw new Error('npm pack returned no artifact');
-    }
-    const tarball = resolve(destination, record.filename);
+    const { tarball, version } = packExactVersion(packageDirectories[name], destination);
     const extraction = resolve(destination, 'extracted');
     mkdirSync(extraction);
     run('tar', ['-xf', tarball, '-C', extraction]);
-    return { directory: resolve(extraction, 'package'), filename: record.filename, tarball, version: record.version };
+    return { directory: resolve(extraction, 'package'), filename: basename(tarball), tarball, version };
 }
 
 function entries(tarball: string): ReadonlyArray<string> {

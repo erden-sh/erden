@@ -96,6 +96,13 @@ function exportSource(commit, directory) {
     rmSync(archive);
 }
 
+/**
+ * pnpm 11 and later check each lockfile entry's publish date against `minimumReleaseAge`, which needs registry
+ * metadata an offline build does not have. The online `pnpm install --frozen-lockfile` before a build checks the same
+ * committed lockfile, and the deployment's lockfile is a projection of it, so the offline steps skip that check.
+ */
+const OFFLINE_POLICY = ['--config.minimum-release-age=0'];
+
 /** pnpm's files that record when or how the install ran, and the link farm a launcher never uses. */
 function dropInstallState(nodeModules) {
     for (const name of readdirSync(nodeModules)) {
@@ -138,7 +145,9 @@ function extractNode(nodeArchive, runtime, directory) {
 
 /** One build of the archive tree from an export, at `stage`. */
 async function buildStage(source, stage, inputs) {
-    run('pnpm', ['install', '--frozen-lockfile', '--offline', '--ignore-scripts', ...inputs.store], { cwd: source });
+    run('pnpm', ['install', '--frozen-lockfile', '--offline', '--ignore-scripts', ...inputs.store, ...OFFLINE_POLICY], {
+        cwd: source,
+    });
     run('pnpm', ['run', 'build:runtime'], { cwd: source });
     // The full deployment, which the bundle is built from and the notices are written from; the archive holds only
     // its sidecar files.
@@ -154,6 +163,7 @@ async function buildStage(source, stage, inputs) {
         ...inputs.store,
         '--config.node-linker=hoisted',
         '--config.inject-workspace-packages=true',
+        ...OFFLINE_POLICY,
     ];
     run('pnpm', ['--filter', '@erden/cli', ...deploy, '--config.allow-unused-patches=true', lib], { cwd: source });
     const nodeModules = join(lib, 'node_modules');

@@ -1,2 +1,12 @@
 # The Workers are their own pnpm workspace, so the repository's root install never pulls in Wrangler.
 packages: []
+
+# No dependency runs install scripts, as under pnpm 10. pnpm 11 and later fail an install, even with --ignore-scripts,
+# on a dependency that has scripts but is not listed here. esbuild's and workerd's binaries come from their platform
+# packages.
+allowBuilds:
+    esbuild: false
+    workerd: false
+
+# pnpm 11 and later install before every `pnpm run` whose dependencies look out of date; installs here are explicit.
+verifyDepsBeforeRun: false
