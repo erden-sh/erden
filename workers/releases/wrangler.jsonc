@@ -37,8 +37,7 @@
                 {
                     "binding": "DB",
                     "database_name": "erden-releases",
-                    // `wrangler d1 create erden-releases`, then put the ID it prints here.
-                    "database_id": "00000000-0000-0000-0000-000000000000",
+                    "database_id": "c7a3bca7-9008-4a70-a3c6-48ff34bc6f18",
                 },
             ],
         },

@@ -33,8 +33,7 @@
                 {
                     "binding": "DB",
                     "database_name": "erden-telemetry",
-                    // `wrangler d1 create erden-telemetry`, then put the ID it prints here.
-                    "database_id": "00000000-0000-0000-0000-000000000000",
+                    "database_id": "4c7bbcba-9c83-44d4-9c61-9cfd61a1d392",
                 },
             ],
         },
