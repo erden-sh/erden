@@ -159,7 +159,7 @@ before every use.
 
 ## Building from source
 
-Node.js 24 (the exact version is in `.node-version`) and pnpm 10.15.0 (`packageManager`). The engines build in a
+Node.js 24 (the exact version is in `.node-version`) and pnpm 12.21.0 (`packageManager`). The engines build in a
 pinned Docker builder image on Linux, or with the Rust toolchain each engine's `rust-toolchain.toml` names on macOS and Windows.
 A Linux build is installed only if it is byte-identical to its pin. A macOS or Windows build also depends on the
 machine's linker and system libraries, which no pin covers, so it can differ from the pin; in CI the minted binary is

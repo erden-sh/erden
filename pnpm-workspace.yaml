@@ -3,3 +3,7 @@ packages:
     - 'packages/*'
     - 'reasoner/*'
     - 'shacl/*'
+
+# pnpm 11 and later read only auth and registry settings from .npmrc; the rest live here.
+engineStrict: true
+saveExact: true

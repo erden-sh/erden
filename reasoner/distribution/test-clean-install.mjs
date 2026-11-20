@@ -3,10 +3,13 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { packExactVersion } from '../../scripts/lib/exact-pack.mjs';
 import { skipUntilReasonerRelease } from '../../scripts/lib/reasoner-release.mjs';
 import { cleanupTestTempRoot, makeTestTempRoot } from '../../scripts/lib/test-temp-root.mjs';
 
 import { REASONER_TOOL } from './src/index.js';
+
+const PNPM_VERSION = '12.21.0';
 
 skipUntilReasonerRelease(`reasoner clean install (${String(process.argv[2])})`);
 
@@ -37,11 +40,7 @@ function runPackageManager(command, args, cwd) {
 }
 
 try {
-    runPackageManager(
-        'pnpm',
-        ['pack', '--json', '--pack-destination', artifacts],
-        resolve(root, 'reasoner/distribution'),
-    );
+    packExactVersion(resolve(root, 'reasoner/distribution'), artifacts);
     // Every platform package the resolver depends on, the unminted ones too (without a binary), so an offline install
     // never looks one up in a registry.
     for (const directory of [
@@ -52,18 +51,14 @@ try {
         'linux-x64-musl',
         'win32-x64-msvc',
     ]) {
-        runPackageManager(
-            'pnpm',
-            ['pack', '--json', '--pack-destination', artifacts],
-            resolve(root, `reasoner/${directory}`),
-        );
+        packExactVersion(resolve(root, `reasoner/${directory}`), artifacts);
     }
     const packageJson = {
         name: 'erden-reasoner-clean-install-fixture',
         version: '0.0.0',
         private: true,
         type: 'module',
-        packageManager: 'pnpm@10.15.0',
+        packageManager: `pnpm@${PNPM_VERSION}`,
         dependencies: {
             '@erden/reasoner-distribution': `file:artifacts/erden-reasoner-distribution-${REASONER_TOOL.version}.tgz`,
         },
@@ -95,8 +90,8 @@ try {
                   ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false'],
                   temporary,
               );
-        if (usesPnpm && !install.includes('pnpm v10.15.0')) {
-            throw new Error('pnpm 10.15.0 was not used');
+        if (usesPnpm && !install.includes(`pnpm v${PNPM_VERSION}`)) {
+            throw new Error(`pnpm ${PNPM_VERSION} was not used`);
         }
         const verified = run(
             process.execPath,
@@ -116,34 +111,50 @@ try {
         for (const directory of ['.corepack', '.home', '.npm-cache']) {
             mkdirSync(resolve(temporary, directory), { mode: 0o700 });
         }
-        if (usesPnpm) {
-            runPackageManager(
-                'corepack',
-                ['pack', 'pnpm@10.15.0', '--output', resolve(temporary, 'corepack.tgz')],
-                root,
-            );
-        }
-        const install = usesPnpm
-            ? 'corepack install -g --cache-only /fixture/corepack.tgz && corepack pnpm --version && corepack pnpm install --offline --ignore-scripts'
-            : 'npm install --offline --ignore-scripts --no-audit --no-fund --package-lock=false';
-        const policy = usesPnpm ? 'may-be-present' : 'must-be-absent';
-        const command = `${install} && node /repo/reasoner/distribution/verify-clean-install.mjs linux ${policy} && node /repo/reasoner/distribution/verify-linux-integrity-failures.mjs`;
         const user =
             typeof process.getuid === 'function' && typeof process.getgid === 'function'
                 ? ['--user', `${String(process.getuid())}:${String(process.getgid())}`]
                 : [];
-        const verified = run('docker', [
-            'run',
-            '--rm',
-            '--network',
-            'none',
-            ...user,
+        const environment = [
             '--env',
             'COREPACK_HOME=/fixture/.corepack',
             '--env',
             'HOME=/fixture/.home',
             '--env',
             'npm_config_cache=/fixture/.npm-cache',
+        ];
+        if (usesPnpm) {
+            // pnpm 12 is a native executable that its Corepack entry downloads, verified, on first use, so the pinned
+            // pnpm is installed and run once in the same image with network access. The install below runs offline.
+            run('docker', [
+                'run',
+                '--rm',
+                ...user,
+                ...environment,
+                '--env',
+                'COREPACK_ENABLE_DOWNLOAD_PROMPT=0',
+                '--mount',
+                mountFixture,
+                '--workdir',
+                '/fixture',
+                image,
+                'sh',
+                '-c',
+                'corepack install && corepack pnpm --version',
+            ]);
+        }
+        const install = usesPnpm
+            ? 'corepack pnpm --version && corepack pnpm install --offline --ignore-scripts'
+            : 'npm install --offline --ignore-scripts --no-audit --no-fund --package-lock=false';
+        const policy = usesPnpm ? 'may-be-present' : 'must-be-absent';
+        const command = `${install} && node /repo/reasoner/distribution/verify-clean-install.mjs linux ${policy} && node /repo/reasoner/distribution/verify-linux-integrity-failures.mjs`;
+        const verified = run('docker', [
+            'run',
+            '--rm',
+            '--network',
+            'none',
+            ...user,
+            ...environment,
             '--mount',
             mountFixture,
             '--mount',

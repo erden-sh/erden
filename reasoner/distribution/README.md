@@ -12,4 +12,4 @@ A source build has no pins, so it is held to what it answers: a regular, executa
 
 Tests and development may explicitly inject a runtime and package locator, and a source build path. A pinned platform has intentionally no environment-variable path fallback.
 
-npm clean installs prune the incompatible optional platform package. pnpm 10.15.0 may retain both when a clean-install fixture declares local platform tarballs directly; the resolver never treats presence as compatibility and still selects and verifies only the one matching runtime. This local-tarball fixture behavior does not weaken runtime selection.
+npm clean installs prune the incompatible optional platform package, and so does pnpm 12.21.0. Older pnpm versions could retain both when a clean-install fixture declared local platform tarballs directly, so the pnpm fixture still allows it; the resolver never treats presence as compatibility and still selects and verifies only the one matching runtime. This local-tarball fixture behavior does not weaken runtime selection.

@@ -17,6 +17,7 @@ export const PROPRIETARY_LICENSE = 'UNLICENSED';
 
 /** Repository files outside any package that open packages may import. Each is extracted with the open tree. */
 export const SHARED_OPEN_HELPERS = Object.freeze([
+    'scripts/lib/exact-pack.mjs',
     'scripts/lib/reasoner-release.mjs',
     'scripts/lib/test-temp-root.mjs',
 ]);
