@@ -198,6 +198,8 @@ jobs:
                   path: engines/shacl
                   run-id: ${{ needs.status.outputs.shacl-run }}
                   github-token: ${{ github.token }}
+            # For linux-arm64-musl this is the official source tarball, for its LICENSE: that archive's Node.js is the
+            # musl build image's own (release/node-runtime.json imageExecutable, checked by build-cli-archive.mjs).
             - name: Download the pinned Node.js runtime
               shell: bash
               run: |

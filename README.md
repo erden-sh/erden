@@ -192,7 +192,12 @@ CLI install, and every test.
 2. **Archive mint** (dispatched after the engine pins are merged): builds no engine. It builds each platform's CLI
    archive twice with the exact pinned engine binaries, fetched from the engine mint run, and uploads
    `release/pins/<version>.json`, naming this run, for a pull request. The musl archives build in a pinned Node.js
-   Alpine image. Each archive gets a build provenance attestation.
+   Alpine image. Each archive gets a build provenance attestation. Every archive's Node.js is pinned in
+   `release/node-runtime.json`: the official builds from nodejs.org, the Node.js project's unofficial build for
+   linux-x64-musl, and for linux-arm64-musl the Node.js of that pinned Alpine image, because the unofficial arm64 musl
+   build is not position-independent and postject cannot inject the CLI into it. That Node.js links `libstdc++` and
+   `libgcc` dynamically, which the install script already requires on Alpine; its `LICENSE` comes from the official,
+   checksummed Node.js source tarball.
 3. **Release** (a `v<version>` tag on the merged pins): builds nothing. It fetches the archives of the mint run the
    pins name, refuses unless each one's size and SHA-256 are the pinned ones, and publishes them with `SHA256SUMS` and
    the install scripts, which check every archive's digest before they extract it, attesting every asset. Once the

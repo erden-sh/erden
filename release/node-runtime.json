@@ -1,6 +1,6 @@
 {
     "schema": "erden.node-runtime/v1",
-    "description": "The Node.js runtime each CLI archive ships, pinned by size and SHA-256. The glibc, macOS and Windows archives are the official builds from baseUrl; the musl ones, which nodejs.org does not publish, are the Node.js project's unofficial-builds (https://github.com/nodejs/unofficial-builds) from the platform's own baseUrl. The digests are from each release's SHASUMS256.txt; build-cli-archive.mjs refuses any other file.",
+    "description": "The Node.js runtime each CLI archive ships, pinned by size and SHA-256. The glibc, macOS and Windows archives are the official builds from baseUrl, and linux-x64-musl the Node.js project's unofficial-builds (https://github.com/nodejs/unofficial-builds) from its own baseUrl, as nodejs.org publishes no musl build; their digests are from each release's SHASUMS256.txt. linux-arm64-musl takes its executable (imageExecutable) from the digest-pinned Node.js Alpine image the musl archives build in (build-musl-archive.mjs), and its file is the official source tarball, whose LICENSE the archive ships: the unofficial linux-arm64-musl build is a non-PIE executable that postject's LIEF cannot inject a single-executable blob into (it adds no PT_NOTE and truncates the dynamic segment, so the result crashes on start), while the image's build is position-independent. That executable links libstdc++ and libgcc dynamically, which install.sh already requires on Alpine. build-cli-archive.mjs refuses any other file.",
     "version": "24.17.0",
     "baseUrl": "https://nodejs.org/dist/v24.17.0/",
     "platforms": {
@@ -17,11 +17,15 @@
             "executable": "bin/node"
         },
         "linux-arm64-musl": {
-            "baseUrl": "https://unofficial-builds.nodejs.org/download/release/v24.17.0/",
-            "file": "node-v24.17.0-linux-arm64-musl.tar.xz",
-            "bytes": 32426680,
-            "sha256": "sha256:137fc8cff77d7f401c0c8bdba6bebe1a8fdd382a2c8649921e03309cf95a5b99",
-            "executable": "bin/node"
+            "file": "node-v24.17.0.tar.xz",
+            "bytes": 54586784,
+            "sha256": "sha256:a7ab562ed2369a29c68b72fa00e3103bcdfe37063dff799c6acc8e404e275fcd",
+            "imageExecutable": {
+                "image": "node@sha256:7c70d1235c0b4c2bc9eeed5393d19f1bbdde6885ba0d58ba62bb385d7b0f3ff1",
+                "path": "/usr/local/bin/node",
+                "bytes": 126141336,
+                "sha256": "sha256:7c01ae64e38b785090cfdbdfa7dd52f7c859156528d03c1a334a265c1c3da6e4"
+            }
         },
         "linux-x64": {
             "file": "node-v24.17.0-linux-x64.tar.xz",

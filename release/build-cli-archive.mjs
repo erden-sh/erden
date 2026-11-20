@@ -115,12 +115,24 @@ function dropInstallState(nodeModules) {
     }
 }
 
-/** The Node.js executable and its LICENSE from the official archive, extracted with the system tar. */
+/**
+ * The Node.js executable and its LICENSE from the official archive, extracted with the system tar. A runtime with an
+ * imageExecutable (linux-arm64-musl) runs where that image's executable is at its path (the musl build container of
+ * build-musl-archive.mjs), checked against its pin; its archive is the official source tarball, which gives only the
+ * LICENSE.
+ */
 function extractNode(nodeArchive, runtime, directory) {
     mkdirSync(directory, { recursive: true });
     copyFileSync(nodeArchive, join(directory, basename(nodeArchive)));
+    const topName = runtime.file.replace(/\.(?:tar\.(?:gz|xz)|zip)$/u, '');
+    const top = join(directory, topName);
+    const image = runtime.imageExecutable;
+    if (image !== undefined) {
+        run(SYSTEM_TAR, ['-xf', basename(nodeArchive), `${topName}/LICENSE`], { cwd: directory });
+        assertPinned(image.path, image, `Node.js ${image.path} of ${image.image}`);
+        return { executable: image.path, license: join(top, 'LICENSE') };
+    }
     run(SYSTEM_TAR, ['-xf', basename(nodeArchive)], { cwd: directory });
-    const top = join(directory, runtime.file.replace(/\.(?:tar\.(?:gz|xz)|zip)$/u, ''));
     return { executable: join(top, runtime.executable), license: join(top, 'LICENSE') };
 }
 
@@ -334,6 +346,15 @@ async function main() {
                 version: nodeRuntimes.version,
                 file: nodeRuntime.file,
                 sha256: nodeRuntime.sha256,
+                ...(nodeRuntime.imageExecutable === undefined
+                    ? {}
+                    : {
+                          imageExecutable: {
+                              image: nodeRuntime.imageExecutable.image,
+                              path: nodeRuntime.imageExecutable.path,
+                              sha256: nodeRuntime.imageExecutable.sha256,
+                          },
+                      }),
             },
             singleExecutable: runs[0].sea,
             dependencyLockDigest: runs[0].dependencyLockDigest,

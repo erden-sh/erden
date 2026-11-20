@@ -2,12 +2,14 @@
 // running build-cli-archive.mjs inside the pinned Node.js Alpine image: a fresh clone of the commit is installed from the
 // lockfile there, so the workspace, the deployed packages and the smoke run are musl ones, as a user's Alpine machine
 // has them. The inputs are checked against their pins by build-cli-archive.mjs, as on every platform. It runs as this
-// host's user, never as root.
+// host's user, never as root. linux-arm64-musl's Node.js is this image's own /usr/local/bin/node (release/node-runtime.json
+// imageExecutable; --node is then the official source tarball, for its LICENSE): the unofficial-builds one is not
+// position-independent, and postject cannot inject a single-executable blob into it.
 //
 // The image runs natively; `--allow-emulation` lets a local rehearsal run the other architecture under QEMU, which a
 // mint never does.
 //
-// Usage: node release/build-musl-archive.mjs --platform <linux-x64-musl|linux-arm64-musl> --node <archive>
+// Usage: node release/build-musl-archive.mjs --platform <linux-x64-musl|linux-arm64-musl> --node <pinned archive>
 //            --reasoner <binary> --shacl <binary> --out <directory> [--commit <sha>] [--allow-emulation]
 import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -51,6 +53,15 @@ function main() {
     const commit = execFileSync('git', ['-C', repository, 'rev-parse', '--verify', `${values.commit}^{commit}`], {
         encoding: 'utf8',
     }).trim();
+    // A runtime that takes its executable from an image (linux-arm64-musl) must name the image this build runs in.
+    const runtime = JSON.parse(
+        execFileSync('git', ['-C', repository, 'show', `${commit}:release/node-runtime.json`], { encoding: 'utf8' }),
+    ).platforms[values.platform];
+    if (runtime.imageExecutable !== undefined && runtime.imageExecutable.image !== MUSL_BUILD_IMAGE) {
+        throw new Error(
+            `release/node-runtime.json takes ${values.platform}'s Node.js from ${runtime.imageExecutable.image}, not the build image ${MUSL_BUILD_IMAGE}`,
+        );
+    }
     const out = resolve(values.out);
     mkdirSync(out, { recursive: true });
     const work = mkdtempSync(join(realpathSync.native(tmpdir()), 'erden-musl-archive-'));
