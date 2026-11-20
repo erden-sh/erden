@@ -245,10 +245,13 @@ export function commitFindings(directory, identity, patterns) {
 export const HISTORY_EMAIL =
     /^(?:(?:\d+\+)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\[bot\])?@users\.noreply\.github\.com|noreply@github\.com)$/iu;
 
-/** A message that ends in a trailer paragraph (Co-authored-by, Signed-off-by and the like). */
+/**
+ * A message that ends in a trailer paragraph (Co-authored-by, Signed-off-by and the like). A trailer key starts with a
+ * capital letter, so a merge commit whose body is a conventional commit subject (`chore: upgrade pnpm`) is not one.
+ */
 function endsInTrailer(message) {
     const paragraphs = message.split(/\n\s*\n/u);
-    return paragraphs.length > 1 && /^[A-Za-z][A-Za-z0-9-]*:\s/mu.test(paragraphs.at(-1) ?? '');
+    return paragraphs.length > 1 && /^[A-Z][A-Za-z0-9-]*:\s/mu.test(paragraphs.at(-1) ?? '');
 }
 
 /** An agent session link, anywhere in a message. */
