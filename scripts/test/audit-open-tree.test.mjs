@@ -296,6 +296,10 @@ test('the history check refuses a trailer, and an agent session link anywhere in
         'the commit message links an agent session',
     ]);
     assert.deepEqual(historyHits('first\n\nthe last paragraph has a colon: mid-line'), []);
+    assert.deepEqual(historyHits('Merge pull request #2 from someone/topic\n\nchore: upgrade pnpm'), []);
+    assert.deepEqual(historyHits('first\n\nClaude-Session: https://example.com/x'), [
+        'the commit message ends in a trailer',
+    ]);
 });
 
 test('the history check passes a GitHub merge commit', () => {
