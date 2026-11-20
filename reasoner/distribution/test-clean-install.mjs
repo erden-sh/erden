@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -39,6 +39,19 @@ function runPackageManager(command, args, cwd) {
         : run(command, args, { cwd });
 }
 
+/**
+ * The committed lockfile's first document, which pins pnpm itself by integrity. pnpm 11 and later record it in a
+ * project that pins pnpm, and an offline install has no registry metadata to resolve it from.
+ */
+function pnpmLockfileHeader() {
+    const text = readFileSync(resolve(root, 'pnpm-lock.yaml'), 'utf8');
+    const end = text.indexOf('\n---\n', 4);
+    if (!text.startsWith('---\n') || end < 0 || !text.slice(0, end).includes(`\n  pnpm@${PNPM_VERSION}:\n`)) {
+        throw new Error(`pnpm-lock.yaml does not begin with the pnpm ${PNPM_VERSION} document`);
+    }
+    return text.slice(0, end + 5);
+}
+
 try {
     packExactVersion(resolve(root, 'reasoner/distribution'), artifacts);
     // Every platform package the resolver depends on, the unminted ones too (without a binary), so an offline install
@@ -72,6 +85,9 @@ try {
         },
     };
     writeFileSync(resolve(temporary, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`);
+    if (usesPnpm) {
+        writeFileSync(resolve(temporary, 'pnpm-lock.yaml'), pnpmLockfileHeader());
+    }
 
     if (!usesContainer) {
         const expected = {
