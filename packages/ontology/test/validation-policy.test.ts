@@ -14,6 +14,7 @@ import {
     ONTOLOGY_VALIDATION_POLICY_ID,
     ONTOLOGY_VALIDATION_POLICY_SHA256,
     ONTOLOGY_VALIDATION_POLICY_V1_DOCUMENT,
+    ONTOLOGY_VALIDATION_POLICY_V2_DOCUMENT,
     resolveOntologyValidationSettings,
     SHACL_ENGINE_DIGEST,
     SHACL_ENGINE_VERSION,
@@ -64,12 +65,16 @@ describe('ontology validation policy capture', () => {
             engineDigest: SHACL_ENGINE_DIGEST,
         });
         expect(manifest.dependencies['@erden/shacl-distribution']).toBe(`workspace:${SHACL_ENGINE_VERSION}`);
-        expect(ONTOLOGY_VALIDATION_POLICY_ID).toBe('erden.ontology-validation-policy/v2');
+        expect(ONTOLOGY_VALIDATION_POLICY_ID).toBe('erden.ontology-validation-policy/v3');
         expect(ONTOLOGY_VALIDATION_POLICY_DOCUMENT.endsWith('\n')).toBe(true);
         expect(ONTOLOGY_VALIDATION_POLICY_SHA256).toBe(
             createHash('sha256').update(ONTOLOGY_VALIDATION_POLICY_DOCUMENT).digest('hex'),
         );
         expect(ONTOLOGY_VALIDATION_POLICY_SHA256).toBe(
+            '23ac0ec1bbb5a9a4526126deda7f5e970e2195205aca60c90b73220827d1180b',
+        );
+        // The v2 document is kept byte for byte, so captures recorded under it still verify.
+        expect(createHash('sha256').update(ONTOLOGY_VALIDATION_POLICY_V2_DOCUMENT).digest('hex')).toBe(
             '1f523355b4da9dd38a13016ef2be6057849d847e4511ee8a9af15c6c4d34ddad',
         );
         // The v1 document is kept byte for byte, so captures recorded under it still verify.
@@ -100,6 +105,33 @@ describe('ontology validation policy capture', () => {
         expect(() =>
             captureOntologyValidationPolicy(settings, { id: 'erden.ontology-validation-policy/v9', sha256: v1Digest }),
         ).toThrow(ValidationPolicyCaptureError);
+    });
+
+    it('recaptures settings under the v2 policy a stored capture names', () => {
+        const settings = resolveOntologyValidationSettings(input(), false).settings;
+        const v2Digest = createHash('sha256').update(ONTOLOGY_VALIDATION_POLICY_V2_DOCUMENT).digest('hex');
+        const v2 = captureOntologyValidationPolicy(settings, {
+            id: 'erden.ontology-validation-policy/v2',
+            sha256: v2Digest,
+        });
+        expect(v2.policy).toEqual({
+            id: 'erden.ontology-validation-policy/v2',
+            sha256: v2Digest,
+            document: ONTOLOGY_VALIDATION_POLICY_V2_DOCUMENT,
+        });
+        expect(v2.sha256).not.toBe(captureOntologyValidationPolicy(settings).sha256);
+        const v3 = JSON.parse(ONTOLOGY_VALIDATION_POLICY_DOCUMENT) as Record<string, unknown> & {
+            shacl: Record<string, unknown>;
+        };
+        const v2Parsed = JSON.parse(ONTOLOGY_VALIDATION_POLICY_V2_DOCUMENT) as Record<string, unknown> & {
+            shacl: Record<string, unknown>;
+        };
+        // v3 changes only the id and the self-test rule.
+        expect({ ...v3, id: null, shacl: { ...v3.shacl, selfTest: null } }).toEqual({
+            ...v2Parsed,
+            id: null,
+            shacl: { ...v2Parsed.shacl, selfTest: null },
+        });
     });
 
     it('resolves defaults and retains the exact policy document', async () => {
