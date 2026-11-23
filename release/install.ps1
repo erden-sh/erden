@@ -7,7 +7,7 @@
 #
 # The same settings as environment variables, for the `irm | iex` form: ERDEN_VERSION, ERDEN_NO_MODIFY_PATH=1.
 #
-# Written by release/write-install-scripts.mjs from release/pins/0.2.0.json. Do not edit by hand. Everything runs
+# Written by release/write-install-scripts.mjs from release/pins/0.2.1.json. Do not edit by hand. Everything runs
 # from the call on the last line, so a download cut short installs nothing; nothing changes the caller's session
 # settings, and a failure never closes the PowerShell window it runs in.
 param(
@@ -28,10 +28,10 @@ function Install-Erden {
     Set-StrictMode -Version 3
     $ProgressPreference = 'SilentlyContinue'
 
-    $pinnedVersion = '0.2.0'
-    $win32X64File = 'erden-0.2.0-win32-x64.zip'
-    $win32X64Sha256 = '42d83c6c7fba45d13a17575a8b383ef8a969a2818ad5f2525d13410604abf432'
-    $win32X64Bytes = 44932793
+    $pinnedVersion = '0.2.1'
+    $win32X64File = 'erden-0.2.1-win32-x64.zip'
+    $win32X64Sha256 = '2b7216628c1d1e4fe89e804a19ae3d0f044a1ba7588ddba46a806aed967b13c5'
+    $win32X64Bytes = 44940855
 
     function Fail([string]$message) {
         throw "erden install: $message"

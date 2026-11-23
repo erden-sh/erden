@@ -1,0 +1,87 @@
+{
+    "schema": "erden.release-pins/v1",
+    "version": "0.2.1",
+    "sourceCommit": "2df2041d43ab4045c6a6ba3050dc62c8460a338c",
+    "sourceDateEpoch": 1795462620,
+    "node": "24.17.0",
+    "complete": true,
+    "layout": "single-executable",
+    "mintRunId": 45250806845,
+    "archives": {
+        "darwin-arm64": {
+            "file": "erden-0.2.1-darwin-arm64.tar.gz",
+            "bytes": 44813905,
+            "sha256": "sha256:4adc59bbf16139914e3b07df1134e44e32c8200f0c23eac91b96c0ee68d3be99"
+        },
+        "linux-arm64": {
+            "file": "erden-0.2.1-linux-arm64.tar.gz",
+            "bytes": 48864532,
+            "sha256": "sha256:4fa89912f92ff2f043927f451a4c3eea6170de1cf0fb614bc78e3ad882477791"
+        },
+        "linux-arm64-musl": {
+            "file": "erden-0.2.1-linux-arm64-musl.tar.gz",
+            "bytes": 51616788,
+            "sha256": "sha256:c22a1eb6b16311dd7c0a59541a5ffa5d57fa1812ced53ab8ad7bfc66702fba5b"
+        },
+        "linux-x64": {
+            "file": "erden-0.2.1-linux-x64.tar.gz",
+            "bytes": 49574512,
+            "sha256": "sha256:8d0ee6b1ff93635e4b4cfdb12379100952c64e4568d8a99a948f7f52860ee6a2"
+        },
+        "linux-x64-musl": {
+            "file": "erden-0.2.1-linux-x64-musl.tar.gz",
+            "bytes": 51319124,
+            "sha256": "sha256:f0b975a7bf0e3421994bdae7c0c07cdc07fe7ec3db954897e69b0c94e4ecd0c2"
+        },
+        "win32-x64": {
+            "file": "erden-0.2.1-win32-x64.zip",
+            "bytes": 44940855,
+            "sha256": "sha256:2b7216628c1d1e4fe89e804a19ae3d0f044a1ba7588ddba46a806aed967b13c5"
+        }
+    },
+    "xzArchives": {
+        "darwin-arm64": {
+            "file": "erden-0.2.1-darwin-arm64.tar.xz",
+            "bytes": 27638676,
+            "sha256": "sha256:417fb56087d16ec6d5761555daa03338085bae3fd8cf5cb89dfe13e5f9a76e2d"
+        },
+        "linux-arm64": {
+            "file": "erden-0.2.1-linux-arm64.tar.xz",
+            "bytes": 30476384,
+            "sha256": "sha256:6134dff5487e60997de208cdbc94e4723c5c713b3afa45bcd35188153689d2ee"
+        },
+        "linux-arm64-musl": {
+            "file": "erden-0.2.1-linux-arm64-musl.tar.xz",
+            "bytes": 31980424,
+            "sha256": "sha256:3ba9f20a71aa3915b5289c9a9bd073bb10be05eac6f535a5b3411f154e8f06a7"
+        },
+        "linux-x64": {
+            "file": "erden-0.2.1-linux-x64.tar.xz",
+            "bytes": 32289148,
+            "sha256": "sha256:9b9eb15dc414f4a4800d7d9998ab31d9d789c96db5b48fb780738031855aa136"
+        },
+        "linux-x64-musl": {
+            "file": "erden-0.2.1-linux-x64-musl.tar.xz",
+            "bytes": 33396988,
+            "sha256": "sha256:154303ca2b95a2724c433a397dceb5590e5727a6edfef9d9e40b16ef6e8c7bc2"
+        }
+    },
+    "engines": {
+        "reasoner": {
+            "darwin-arm64": "sha256:43a7455b322e05743c6cb8aad8a7b7d45ac50ec6ad2a79b0e1ced1d54c6e4527",
+            "linux-arm64": "sha256:2addbe6a0ca49b6d9b6b897c3ab969a30adad851c290f6fe1626caa3a48cb1c9",
+            "linux-arm64-musl": "sha256:fb55c8f3f07536d30909101cf1b34b7b5182350ca29839aecddf7da733a0c1ce",
+            "linux-x64": "sha256:c306c20e1ee0bdeba53a5f818fb3a561cc6d585a658436a3af7c41db9a802df1",
+            "linux-x64-musl": "sha256:0006304c007ee1d6f0b28022d7a38d7ebcc792def1b52f934d33b6f822c5163a",
+            "win32-x64": "sha256:2ab7f70180f5861ad68c18930d5bc68014d481e26d44b0dc78168ad8ea2eaa15"
+        },
+        "shacl": {
+            "darwin-arm64": "sha256:9fee0ac3954afe1732a515a1d047024c62924fc7951efb66c9b7c7239c5bfd27",
+            "linux-arm64": "sha256:2e39dedbf173f4cf45235fd0d93313a70c48421211d0e1284fd709ba98554ad0",
+            "linux-arm64-musl": "sha256:592dc6a3d8c5b08000159d773a1fccfe7e4756b96250115f1d5e3c05df792d6e",
+            "linux-x64": "sha256:844b8a8035c4ee280e41dd430a3a20c27f9cced6963a59831bef1ecbbe4db33b",
+            "linux-x64-musl": "sha256:36ea6981e84ce2f83dd356723884988278ebf45e1cb9ec53dbd935663453a300",
+            "win32-x64": "sha256:ebbbf784b6051b69d2f20a1205073c1a289911985b795ff4c14bea0e955952a9"
+        }
+    }
+}
