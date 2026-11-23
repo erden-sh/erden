@@ -1,6 +1,6 @@
 {
     "name": "@erden/cli",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "private": true,
     "description": "Erden CLI (erden / den): init, check, doctor, pack, and publish ontology projects.",
     "license": "Apache-2.0",
