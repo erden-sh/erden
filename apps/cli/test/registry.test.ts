@@ -688,6 +688,28 @@ describe('CLI publication workflow', () => {
         expect(malformed.packCalls()).toBe(0);
     });
 
+    it('refuses a manifest whose registry is the website, naming the registry, before reading a credential', async () => {
+        const root = tempRoot();
+        writeManifest(root, 'https://erden.sh');
+        const read: string[] = [];
+        const captured = context(
+            root,
+            report(join(root, 'project-1.2.3.erdenpkg')),
+            runtime({
+                readCredential: (origin) => {
+                    read.push(origin);
+                    return credential(origin);
+                },
+            }),
+        );
+        expect(await runPublishCommand(['1.2.3'], captured.context)).toBe(3);
+        expect(read).toEqual([]);
+        expect(captured.packCalls()).toBe(0);
+        expect(captured.stderr).toEqual([
+            'Erden could not complete [REGISTRY_IS_WEBSITE]\nThe project manifest\'s registry, https://erden.sh, is the Erden website, not a registry. Set "registry" to "https://registry.erden.sh".\n',
+        ]);
+    });
+
     it('stops before upload with the packing refusal and its remedy when the erden.lock is stale', async () => {
         const root = tempRoot();
         writeManifest(root);
@@ -933,6 +955,39 @@ describe('CLI publication status workflow', () => {
         for (const forbidden of ['credential', 'worker', 'internalRef', 'objectKey', '/private/']) {
             expect(captured.stdout.join('')).not.toContain(forbidden);
         }
+    });
+
+    it('reads --registry https://erden.sh, the website, as the hosted registry', async () => {
+        const root = tempRoot();
+        const origins: string[] = [];
+        const captured = context(
+            root,
+            report(join(root, 'unused.erdenpkg')),
+            runtime({
+                readCredential: (origin) => {
+                    origins.push(origin);
+                    return credential(origin);
+                },
+                getAttempt: ({ registryOrigin }) => {
+                    origins.push(registryOrigin);
+                    return Promise.resolve(attempt('succeeded'));
+                },
+            }),
+        );
+        expect(
+            await runPublicationCommand(['attempt-1', '--registry', 'https://erden.sh', '--json'], captured.context),
+        ).toBe(0);
+        expect(new Set(origins)).toEqual(new Set(['https://registry.erden.sh']));
+    });
+
+    it('refuses a manifest whose registry is the website when --registry is omitted', async () => {
+        const root = tempRoot();
+        writeManifest(root, 'https://www.erden.sh');
+        const captured = context(root, report(join(root, 'unused.erdenpkg')), runtime());
+        expect(await runPublicationCommand(['attempt-1'], captured.context)).toBe(3);
+        expect(captured.stderr).toEqual([
+            'Erden could not complete [REGISTRY_IS_WEBSITE]\nThe project manifest\'s registry, https://www.erden.sh, is the Erden website, not a registry. Set "registry" to "https://registry.erden.sh".\n',
+        ]);
     });
 
     it('aborts a stalled status read at the fixed command deadline without another request or residue', async () => {

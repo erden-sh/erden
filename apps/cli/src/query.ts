@@ -30,7 +30,16 @@ import {
 } from '@erden/contracts';
 import { DEFAULT_REGISTRY_ORIGIN, loadManifest } from '@erden/project';
 
-import { CliRegistryUsageError, HTTP_CREDENTIAL_WARNING, terminalText, type CliRegistryTextSink } from './registry.js';
+import {
+    CliRegistryUsageError,
+    HTTP_CREDENTIAL_WARNING,
+    REGISTRY_ORIGIN_USAGE,
+    RegistryWebsiteError,
+    projectRegistryOrigin,
+    terminalText,
+    typedRegistryOrigin,
+    type CliRegistryTextSink,
+} from './registry.js';
 
 const MAXIMUM_QUERY_BYTES = RELEASE_QUERY_LIMITS.maxQueryBytes;
 
@@ -94,14 +103,11 @@ function splitSpecification(input: string): Readonly<{ identifier: string; versi
 }
 
 function canonicalRegistry(value: string): string {
-    try {
-        if (normalizeRegistryOrigin(value) !== value) {
-            throw new Error();
-        }
-        return value;
-    } catch {
-        throw new CliRegistryUsageError('--registry must be one canonical HTTP(S) origin');
+    const origin = typedRegistryOrigin(value);
+    if (origin === undefined) {
+        throw new CliRegistryUsageError(REGISTRY_ORIGIN_USAGE);
     }
+    return origin;
 }
 
 function parseQueryArguments(arguments_: ReadonlyArray<string>): QueryArguments {
@@ -167,6 +173,7 @@ function queryOrigin(explicit: string | undefined, cwd: string): string {
         }
         registry = undefined;
     }
+    registry = projectRegistryOrigin(registry);
     if (registry === undefined) {
         return DEFAULT_REGISTRY_ORIGIN;
     }
@@ -394,7 +401,7 @@ export async function runQueryCommand(
     try {
         return await execute(options, context, runtime, cancellation.signal);
     } catch (cause) {
-        if (cause instanceof CliRegistryUsageError) {
+        if (cause instanceof CliRegistryUsageError || cause instanceof RegistryWebsiteError) {
             throw cause;
         }
         if (cause instanceof QueryRefused) {

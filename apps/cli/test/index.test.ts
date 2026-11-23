@@ -446,6 +446,176 @@ describe('erden CLI adapter', () => {
         expect(captured.stderr).toEqual([]);
     });
 
+    it.each(['https://erden.sh', 'https://erden.sh/', 'https://www.erden.sh', 'http://erden.sh'])(
+        'logs in to the hosted registry, and stores its credential there, when --registry names the website %s',
+        async (typed) => {
+            const captured = captureRuntime(tempRoot());
+            const origins: string[] = [];
+            const written: Array<{ origin: string }> = [];
+            const credential = 'erden_cli_v1_d1_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+            const authentication: CliAuthenticationRuntime = {
+                begin: (registryOrigin, requestId) => {
+                    origins.push(registryOrigin);
+                    return Promise.resolve({
+                        registryOrigin,
+                        requestId,
+                        deviceSecret: 'erden_dvc_v1_d1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+                        userCode: 'ABCD-EFGH',
+                        verificationUrl: `${registryOrigin}/device?user_code=ABCD-EFGH`,
+                        expiresAt: 10_000,
+                        intervalSeconds: 5,
+                    });
+                },
+                exchange: (registryOrigin) => {
+                    origins.push(registryOrigin);
+                    return Promise.resolve({ status: 'credential', credential, expiresAt: 20_000 });
+                },
+                revoke: () => Promise.resolve(),
+                read: () => null,
+                write: (value) => {
+                    written.push(value);
+                    return { path: '/credential', device: 1n, inode: 1n, sha256: 'a'.repeat(64), value };
+                },
+                remove: () => true,
+                requestId: () => 'ERERERERERERERERERERERERERERERERERERERERERE',
+                sleep: () => Promise.resolve(),
+                now: () => 0,
+            };
+            expect(await runCli(['login', '--registry', typed], { ...captured.runtime, authentication })).toBe(
+                CLI_EXIT.success,
+            );
+            expect(new Set(origins)).toEqual(new Set(['https://registry.erden.sh']));
+            expect(written.map((value) => value.origin)).toEqual(['https://registry.erden.sh']);
+            expect(captured.stderr).toEqual([
+                `${new URL(typed).origin} is the Erden website; using its registry, https://registry.erden.sh\n`,
+            ]);
+            expect(captured.stdout.at(-1)).toBe('Logged in to https://registry.erden.sh\n');
+        },
+    );
+
+    it('logs out of the hosted registry when --registry names the website', async () => {
+        const captured = captureRuntime(tempRoot());
+        const read: string[] = [];
+        const authentication = {
+            read: (registryOrigin: string) => {
+                read.push(registryOrigin);
+                return null;
+            },
+        } as unknown as CliAuthenticationRuntime;
+        expect(
+            await runCli(['logout', '--registry', 'https://erden.sh'], { ...captured.runtime, authentication }),
+        ).toBe(CLI_EXIT.success);
+        expect(read).toEqual(['https://registry.erden.sh']);
+        expect(captured.stdout).toEqual(['No credential is stored for https://registry.erden.sh\n']);
+    });
+
+    it.each(['erden.sh', 'https://registry.test/', 'https://erden.sh:8443/x'])(
+        'names the hosted registry when --registry %s is not one origin',
+        async (typed) => {
+            const captured = captureRuntime(tempRoot());
+            const authentication = {} as unknown as CliAuthenticationRuntime;
+            expect(await runCli(['login', '--registry', typed], { ...captured.runtime, authentication })).toBe(
+                CLI_EXIT.usage,
+            );
+            expect(captured.stderr[0]).toContain(
+                'Erden usage error: --registry must be one canonical HTTP(S) origin, such as https://registry.erden.sh\n',
+            );
+        },
+    );
+
+    it('says an origin that does not answer device login is not a registry, and names the hosted one', async () => {
+        for (const code of ['CLIENT_RESPONSE_INVALID', 'CLIENT_NOT_FOUND'] as const) {
+            const captured = captureRuntime(tempRoot());
+            const authentication = {
+                begin: () => Promise.reject(new RegistryClientError(code)),
+                sleep: () => Promise.resolve(),
+                requestId: () => 'ERERERERERERERERERERERERERERERERERERERERERE',
+                now: () => 0,
+            } as unknown as CliAuthenticationRuntime;
+            expect(
+                await runCli(['login', '--registry', 'https://docs.example.test'], {
+                    ...captured.runtime,
+                    authentication,
+                }),
+            ).toBe(CLI_EXIT.operational);
+            expect(captured.stderr).toEqual([
+                'Erden login could not complete [DEVICE_LOGIN_FAILED]\nhttps://docs.example.test did not answer as an Erden registry. The hosted Erden registry is https://registry.erden.sh: run erden login --registry https://registry.erden.sh.\n',
+            ]);
+        }
+        const hosted = captureRuntime(tempRoot());
+        const unreachable = {
+            begin: () => Promise.reject(new RegistryClientError('CLIENT_RESPONSE_INVALID')),
+            sleep: () => Promise.resolve(),
+            requestId: () => 'ERERERERERERERERERERERERERERERERERERERERERE',
+            now: () => 0,
+        } as unknown as CliAuthenticationRuntime;
+        expect(await runCli(['login'], { ...hosted.runtime, authentication: unreachable })).toBe(CLI_EXIT.operational);
+        expect(hosted.stderr).toEqual([
+            'Erden login could not complete [DEVICE_LOGIN_FAILED]\nhttps://registry.erden.sh did not answer as an Erden registry.\n',
+        ]);
+        const transport = captureRuntime(tempRoot());
+        const offline = {
+            begin: () => Promise.reject(new RegistryClientError('CLIENT_TRANSPORT')),
+            sleep: () => Promise.resolve(),
+            requestId: () => 'ERERERERERERERERERERERERERERERERERERERERERE',
+            now: () => 0,
+        } as unknown as CliAuthenticationRuntime;
+        expect(
+            await runCli(['login', '--registry', 'https://registry.test'], {
+                ...transport.runtime,
+                authentication: offline,
+            }),
+        ).toBe(CLI_EXIT.operational);
+        expect(transport.stderr).toEqual(['Erden login could not complete [DEVICE_LOGIN_FAILED]\n']);
+    });
+
+    it('refuses a project manifest whose registry is the website, naming the registry, before any request', async () => {
+        const parent = tempRoot();
+        const project = await initFixture(parent);
+        const manifestPath = join(project, 'erden.config.json');
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+        manifest.registry = 'https://erden.sh';
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+        const requested: string[] = [];
+        const authentication = {
+            begin: (registryOrigin: string) => {
+                requested.push(registryOrigin);
+                return Promise.reject(new RegistryClientError('CLIENT_TRANSPORT'));
+            },
+            read: (registryOrigin: string) => {
+                requested.push(registryOrigin);
+                return null;
+            },
+            sleep: () => Promise.resolve(),
+            requestId: () => 'ERERERERERERERERERERERERERERERERERERERERERE',
+            now: () => 0,
+        } as unknown as CliAuthenticationRuntime;
+        const refusal =
+            'Erden could not complete [REGISTRY_IS_WEBSITE]\nThe project manifest\'s registry, https://erden.sh, is the Erden website, not a registry. Set "registry" to "https://registry.erden.sh".\n';
+        let serviceCalls = 0;
+        function unexpected() {
+            serviceCalls += 1;
+            return Effect.die('the service must not run');
+        }
+        const services: CliServices = {
+            ...captureRuntime(project).runtime.services,
+            install: { install: unexpected },
+            dependencies: { add: unexpected, remove: unexpected, update: unexpected },
+        };
+        for (const command of [['login'], ['logout'], ['add', '@example/other@^1.0.0'], ['update'], ['install']]) {
+            const captured = captureRuntime(project, services);
+            expect(await runCli(command, { ...captured.runtime, authentication }), command.join(' ')).toBe(
+                CLI_EXIT.operational,
+            );
+            expect(captured.stderr, command.join(' ')).toEqual([refusal]);
+        }
+        expect(requested).toEqual([]);
+        expect(serviceCalls).toBe(0);
+        // Offline work never asks a registry, so the website in the manifest does not stop it.
+        const offline = captureRuntime(project);
+        expect(await runCli(['install', '--offline', '--json'], offline.runtime)).toBe(CLI_EXIT.success);
+    });
+
     it('revokes remotely before removing the exact read revision and emits no HTTPS warning', async () => {
         const captured = captureRuntime(tempRoot());
         const credential = 'erden_cli_v1_d1_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
