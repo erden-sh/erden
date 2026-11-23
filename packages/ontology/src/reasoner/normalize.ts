@@ -357,6 +357,19 @@ export function partitionForBundledReasoner(
     });
 }
 
+/**
+ * The partition `partitionForBundledReasoner(graph)` gives, when normalization of that graph has already computed it:
+ * under the bundled release, with no statement left out after a refusal (a statement left out that way is the only
+ * kind of finding with a `reason`). Null otherwise. The partition reads only the asserted statements and the sources,
+ * which materializing a decision keeps, so it also holds for the decision's reasoned graph.
+ */
+export function bundledPartitionOf(normalization: NormalizedReasonerInput): ProfilePartition | null {
+    return normalization.request.requiredTool.version === BUNDLED_REASONER_VERSION &&
+        normalization.partition.findings.every((finding) => finding.reason === undefined)
+        ? normalization.partition
+        : null;
+}
+
 /** Whether the bundled reasoner decides this datatype in this usage; datatypes outside the built-in list do. */
 export function isDecidableDatatypeUsage(
     datatype: string,
@@ -678,8 +691,19 @@ function normalizeOnce(
         );
     const sourceBindingById = new Map(sourceBindings.map((binding) => [binding.sourceId, binding]));
     const provenanceByQuad = new Map(graph.provenance.map((entry) => [entry.key, entry]));
+    // Each quad's key is built once: rebuilding both keys on every comparison and lookup cost a large check more
+    // than everything else normalization does.
+    const quadKeys = new Map<Quad, string>();
+    function keyOf(quad: Quad): string {
+        let key = quadKeys.get(quad);
+        if (key === undefined) {
+            key = quadKey(quad);
+            quadKeys.set(quad, key);
+        }
+        return key;
+    }
     function assertedContributors(quad: Quad): ReadonlyArray<QuadContributor> {
-        const entry = provenanceByQuad.get(quadKey(quad));
+        const entry = provenanceByQuad.get(keyOf(quad));
         const contributors = entry?.asserted ?? [];
         if (contributors.length === 0) {
             throw new ReasonerNormalizationError(
@@ -703,11 +727,13 @@ function normalizeOnce(
                 { actualSourceIds, requiredSourceIds },
             );
         }
-        consumed.add(quadKey(quad));
+        consumed.add(keyOf(quad));
     }
     const allQuads = graph.dataset
         .getQuads(null, null, null, null)
-        .sort((left, right) => compareCodePoints(quadKey(left), quadKey(right)));
+        .map((quad) => ({ key: keyOf(quad), quad }))
+        .sort((left, right) => compareCodePoints(left.key, right.key))
+        .map(({ quad }) => quad);
     for (const quad of allQuads) {
         if (quad.graph.termType !== 'DefaultGraph') {
             throw new ReasonerNormalizationError(
@@ -728,7 +754,7 @@ function normalizeOnce(
         partition.excludedKeys.size === 0 && partition.acceptedKeys.size === 0
             ? allQuads
             : allQuads.filter(
-                  (quad) => !partition.excludedKeys.has(quadKey(quad)) && !partition.acceptedKeys.has(quadKey(quad)),
+                  (quad) => !partition.excludedKeys.has(keyOf(quad)) && !partition.acceptedKeys.has(keyOf(quad)),
               );
     const typeIris = new Map<string, Set<string>>();
     for (const quad of reasonedQuads) {
@@ -908,7 +934,7 @@ function normalizeOnce(
         if (
             expressionIncoming.length !== 1 ||
             owningExpressionQuad === undefined ||
-            quadKey(owningExpressionQuad) !== quadKey(referencingQuad)
+            keyOf(owningExpressionQuad) !== keyOf(referencingQuad)
         ) {
             throw new ReasonerNormalizationError(
                 'MALFORMED_RDF_LIST',
@@ -1024,7 +1050,7 @@ function normalizeOnce(
         for (const [cell, ownerEdge] of listOwnership) {
             const incoming = graph.dataset.getQuads(null, null, cell, null);
             const soleIncoming = incoming[0];
-            if (incoming.length !== 1 || soleIncoming === undefined || quadKey(soleIncoming) !== quadKey(ownerEdge)) {
+            if (incoming.length !== 1 || soleIncoming === undefined || keyOf(soleIncoming) !== keyOf(ownerEdge)) {
                 throw new ReasonerNormalizationError(
                     'MALFORMED_RDF_LIST',
                     `${context} RDF list cells must have exactly one owning incoming edge`,
@@ -1045,7 +1071,7 @@ function normalizeOnce(
     }
     const axioms = new Map<string, NormalizedAxiom>();
     const axiomBindings = new Map<string, ReasonerAxiomBinding>();
-    const axiomRoots = new Map<string, string[]>();
+    const axiomRoots = new Map<string, Set<string>>();
     function emit(quad: Quad, semantic: SemanticAxiom): void {
         consume(quad);
         for (const contributor of assertedContributors(quad)) {
@@ -1065,11 +1091,9 @@ function normalizeOnce(
                 }),
             );
             const id = `axiom:${digest.slice('sha256:'.length)}`;
-            const roots = axiomRoots.get(id) ?? [];
-            if (!roots.includes(quadKey(quad))) {
-                roots.push(quadKey(quad));
-                axiomRoots.set(id, roots);
-            }
+            const roots = axiomRoots.get(id) ?? new Set<string>();
+            roots.add(keyOf(quad));
+            axiomRoots.set(id, roots);
             if (axioms.has(id)) {
                 continue;
             }
@@ -1091,7 +1115,7 @@ function normalizeOnce(
         }
     }
     for (const quad of reasonedQuads) {
-        if (consumed.has(quadKey(quad))) {
+        if (consumed.has(keyOf(quad))) {
             continue;
         }
         attempt.current = quad;
@@ -1513,7 +1537,7 @@ function normalizeOnce(
     attempt.current = undefined;
     datatypeUsage.finish();
     for (const quad of reasonedQuads) {
-        if (!consumed.has(quadKey(quad))) {
+        if (!consumed.has(keyOf(quad))) {
             attempt.current = quad;
             throw new ReasonerNormalizationError(
                 'UNREPRESENTABLE_RDF_TERM',

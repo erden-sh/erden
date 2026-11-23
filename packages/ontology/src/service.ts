@@ -151,7 +151,7 @@ export function makeOntologyService(ports: OntologyPorts): OntologyServiceShape 
                           catch: () => new ValidationPolicyCaptureError(),
                       })
                     : null;
-            const { borrowedTerms, propertyDomainRange } = validateCoreOntology(graph);
+            const { borrowedTerms, propertyDomainRange } = validateCoreOntology(graph, input.profilePartition);
             const captured =
                 input.captureShaclEvidence === true
                     ? yield* validateShaclWithEvidence(

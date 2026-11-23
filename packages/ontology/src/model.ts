@@ -11,6 +11,7 @@ import type {
     RequiredTool,
 } from '@erden/reasoner-protocol';
 
+import type { ProfilePartition } from './reasoner/partition.js';
 import type { ShaclEvidence, ShaclSelfTestEvidence } from './shacl-evidence/model.js';
 import type { OntologyMediaType } from './source-formats/formats.js';
 import type { OntologyValidationPolicyCapture } from './validation-policy.js';
@@ -445,7 +446,13 @@ export interface OntologyCheckInput {
     readonly captureValidationPolicy?: boolean;
 }
 
-export type OntologyValidationInput = Omit<OntologyCheckInput, 'dataSources'>;
+export type OntologyValidationInput = Omit<OntologyCheckInput, 'dataSources'> & {
+    /**
+     * The bundled reasoner's profile partition of the graph's asserted statements, when the caller already has it
+     * (`bundledPartitionOf` a normalization of it), so core validation does not compute it again.
+     */
+    readonly profilePartition?: ProfilePartition;
+};
 
 export interface OntologyCheckReport {
     readonly conforms: boolean;

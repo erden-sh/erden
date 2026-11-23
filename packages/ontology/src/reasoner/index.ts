@@ -5,6 +5,7 @@ export * from './doctor.js';
 // Named, so the internal entries of these modules (documented `Internal:`) stay out of the package's public surface.
 export { materializeReasonerDecision } from './materialize.js';
 export {
+    bundledPartitionOf,
     isBuiltinDatatype,
     isDecidableDatatypeUsage,
     normalizeAssembledOntology,

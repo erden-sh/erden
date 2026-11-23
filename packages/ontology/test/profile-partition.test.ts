@@ -9,12 +9,14 @@ import { isUnknownReservedIri } from '@erden/reasoner-protocol';
 
 import {
     assembleOntology,
+    bundledPartitionOf,
     decideAssembledOntology,
     isBuiltinDatatype,
     isDecidableDatatypeUsage,
     materializeReasonerDecision,
     normalizeAssembledOntology,
     partitionAssembledOntology,
+    partitionForBundledReasoner,
     PROFILE_PARTITION_RULES_DOCUMENT,
     PROFILE_PARTITION_RULES_ID,
     PROFILE_PARTITION_RULES_SHA256,
@@ -391,6 +393,34 @@ ex:bo ex:wasRevisionOf ex:rex .
         expect(core.borrowedTerms.missing).toEqual([]);
         expect(core.borrowedTerms.used).not.toContain('http://purl.org/dc/terms/title');
         expect(core.propertyDomainRange.properties).toEqual([]);
+    });
+
+    it("hands normalization's partition to core validation only when it is the partition validation computes", async () => {
+        const graph = await assemble([
+            {
+                id: 'root',
+                policy: 'report',
+                text: `${CLEAN}
+<https://example.test/root> dct:title "Root" ; owl:versionInfo "1" .
+ex:Puppy a owl:Class ; rdfs:subClassOf ex:Dog , [ a owl:Restriction ; owl:onProperty ex:likes ; owl:minCardinality "2"^^xsd:nonNegativeInteger ] .
+ex:bo a ex:Puppy ; foaf:nick "Bo" .
+`,
+            },
+        ]);
+        const decision = await Effect.runPromise(decideAssembledOntology(graph));
+        const reasoned = materializeReasonerDecision(decision);
+        const handed = bundledPartitionOf(decision.normalization);
+        expect(handed).toBe(decision.normalization.partition);
+        expect(handed?.findings.length).toBeGreaterThan(0);
+        // The reasoned graph keeps every asserted statement and source, so its partition is the same.
+        expect(handed).toEqual(partitionForBundledReasoner(reasoned));
+        expect(validateCoreOntology(reasoned, handed ?? undefined)).toEqual(validateCoreOntology(reasoned));
+
+        // A statement left out after a refusal is not in the partition validation computes.
+        const refused = await assemble([{ id: 'root', policy: 'report', text: `${PREFIXES}owl:Thing a ex:A .` }]);
+        const normalized = normalizeAssembledOntology(refused, REQUIRED_TOOL);
+        expect(normalized.partition.findings.some((finding) => finding.reason !== undefined)).toBe(true);
+        expect(bundledPartitionOf(normalized)).toBeNull();
     });
 
     it.each([
