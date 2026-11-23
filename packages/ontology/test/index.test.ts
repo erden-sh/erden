@@ -641,6 +641,108 @@ ex:InertShape a sh:NodeShape ; sh:message "has no target and no fixture" .`;
         expect(result?.conforms).toBe(false);
     });
 
+    it('covers typed nested property shapes, at any depth, by the self-test of the shape that holds them', async () => {
+        const nestedShapes = `${SHAPE_PREFIXES}
+ex:StatusShape a sh:NodeShape ; sh:targetClass ex:Thing ;
+  sh:property [ a sh:PropertyShape ; sh:path ex:status ; sh:minCount 1 ; sh:message "status required" ] ;
+  sh:property [ a sh:PropertyShape ; sh:path ex:status ; sh:maxCount 1 ; sh:message "one status" ] .
+ex:DeepShape a sh:NodeShape ; sh:targetClass ex:Thing ;
+  sx:selftestFixture """t:bad ex:status t:other .""" ;
+  sh:property [ a sh:PropertyShape ; sh:path ex:status ;
+    sh:property [ a sh:PropertyShape ; sh:path ex:status ; sh:minCount 1 ; sh:message "status of status" ] ] .`;
+        const service = makeOntologyService(
+            ports({
+                'root.ttl': `${greenOntology} ex:item ex:status ex:item .`,
+                'nested.ttl': nestedShapes,
+            }),
+        );
+        const graph = await Effect.runPromise(service.assemble([source('root', 'root.ttl')]));
+        const result = await Effect.runPromise(service.shacl(graph, [shape('nested', 'nested.ttl')], true));
+        expect(result?.selfTest).toEqual([
+            { shape: 'https://example.test/root#DeepShape', fired: true, reason: null },
+            { shape: 'https://example.test/root#StatusShape', fired: true, reason: null },
+        ]);
+        // The four typed nested property shapes are covered by their holders, so they get no summary either.
+        expect(result?.shapes.map(({ shape }) => shape)).toEqual([
+            'https://example.test/root#DeepShape',
+            'https://example.test/root#StatusShape',
+        ]);
+        expect(result).toMatchObject({ conforms: true, counts: { violation: 0 } });
+    });
+
+    it('self-tests a targeted property shape that a node shape also holds through sh:property', async () => {
+        const sharedShapes = `${SHAPE_PREFIXES}
+ex:SharedStatusShape a sh:PropertyShape ; sh:targetClass ex:Thing ; sh:path ex:status ; sh:minCount 1 .
+ex:HolderShape a sh:NodeShape ; sh:targetClass ex:Thing ; sh:property ex:SharedStatusShape .`;
+        const service = makeOntologyService(
+            ports({
+                'root.ttl': `${greenOntology} ex:item ex:status ex:item .`,
+                'shared.ttl': sharedShapes,
+            }),
+        );
+        const graph = await Effect.runPromise(service.assemble([source('root', 'root.ttl')]));
+        const result = await Effect.runPromise(service.shacl(graph, [shape('shared', 'shared.ttl')], true));
+        expect(result?.selfTest).toEqual([
+            { shape: 'https://example.test/root#HolderShape', fired: true, reason: null },
+            { shape: 'https://example.test/root#SharedStatusShape', fired: true, reason: null },
+        ]);
+        expect(result?.conforms).toBe(true);
+    });
+
+    it('covers untargeted shapes reached through sh:not, sh:node and sh:or by the referring shape', async () => {
+        const referringShapes = `${SHAPE_PREFIXES}
+ex:NotOtherShape a sh:NodeShape ; sh:targetClass ex:Thing ;
+  sx:selftestFixture """t:bad a ex:Other .""" ;
+  sh:not [ a sh:NodeShape ; sh:class ex:Other ] .
+ex:NodeShapeUser a sh:NodeShape ; sh:targetClass ex:Thing ; sh:node ex:HasStatus .
+ex:HasStatus a sh:NodeShape ; sh:property [ sh:path ex:status ; sh:minCount 1 ] .
+ex:OrShape a sh:NodeShape ; sh:targetClass ex:Thing ;
+  sh:or ( [ a sh:NodeShape ; sh:class ex:Other ] ex:HasStatus ) .
+ex:TargetedAndReferenced a sh:NodeShape ; sh:targetClass ex:Thing ;
+  sh:property [ sh:path ex:status ; sh:minCount 1 ] .
+ex:UsesTargeted a sh:NodeShape ; sh:targetClass ex:Thing ; sh:node ex:TargetedAndReferenced .`;
+        const service = makeOntologyService(
+            ports({
+                'root.ttl': `${greenOntology} ex:Other a owl:Class . ex:item ex:status ex:item .`,
+                'referring.ttl': referringShapes,
+            }),
+        );
+        const graph = await Effect.runPromise(service.assemble([source('root', 'root.ttl')]));
+        const result = await Effect.runPromise(service.shacl(graph, [shape('referring', 'referring.ttl')], true));
+        expect(result?.selfTest).toEqual([
+            { shape: 'https://example.test/root#NodeShapeUser', fired: true, reason: null },
+            { shape: 'https://example.test/root#NotOtherShape', fired: true, reason: null },
+            { shape: 'https://example.test/root#OrShape', fired: true, reason: null },
+            { shape: 'https://example.test/root#TargetedAndReferenced', fired: true, reason: null },
+            { shape: 'https://example.test/root#UsesTargeted', fired: true, reason: null },
+        ]);
+        expect(result).toMatchObject({ conforms: true, counts: { violation: 0 } });
+    });
+
+    it('does not self-test a targeted shape that declares no constraint, and still fails one that does', async () => {
+        const punnedShapes = `${SHAPE_PREFIXES}
+ex:Thing a owl:Class, sh:NodeShape ; sh:targetClass ex:Thing ; rdfs:label "thing" ;
+  sh:message "selects things and checks nothing" ; sh:severity sh:Warning .
+ex:PathOnlyShape a sh:NodeShape ; sh:targetClass ex:Thing ; sh:property [ sh:path ex:status ] .
+ex:UnfiredShape a sh:NodeShape ; sh:targetClass ex:Thing ;
+  sh:property [ sh:path ex:status ; sh:maxCount 1 ] .`;
+        const service = makeOntologyService(
+            ports({
+                'root.ttl': greenOntology,
+                'punned.ttl': punnedShapes,
+            }),
+        );
+        const graph = await Effect.runPromise(service.assemble([source('root', 'root.ttl')]));
+        const result = await Effect.runPromise(service.shacl(graph, [shape('punned', 'punned.ttl')], true));
+        expect(result?.selfTest.map(({ shape, fired }) => ({ shape, fired }))).toEqual([
+            { shape: 'https://example.test/root#UnfiredShape', fired: false },
+        ]);
+        expect(typeof result?.selfTest[0]?.reason).toBe('string');
+        expect(result?.shapes.map(({ shape }) => shape)).toEqual(['https://example.test/root#UnfiredShape']);
+        expect(result?.counts.violation).toBe(0);
+        expect(result?.conforms).toBe(false);
+    });
+
     it('integrates root/dependency shapes and root-only CQs through service.check', async () => {
         function closureShape(iri: string): string {
             return `${SHAPE_PREFIXES}
