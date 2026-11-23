@@ -102,10 +102,16 @@ import { cliUserAgent, cliVersion, nodeInstallation, stateDirectory, type Instal
 import { nodeCliQueryRuntime, runQueryCommand, type CliQueryRuntime } from './query.js';
 import {
     CliRegistryUsageError,
+    REGISTRY_ORIGIN_USAGE,
+    RegistryWebsiteError,
+    isErdenWebsiteOrigin,
     makeNodeCliDependencyRegistryComposition,
     nodeCliPublicationRuntime,
+    projectRegistryOrigin,
+    renderRegistryWebsiteError,
     runPublicationCommand,
     runPublishCommand,
+    typedRegistryOrigin,
     type CliPublicationRuntime,
 } from './registry.js';
 import {
@@ -168,6 +174,7 @@ Usage:
 Use den in place of erden for any command.
 Docs: https://erden.sh
 Registry: https://registry.erden.sh, unless --registry or the nearest project's manifest names another.
+  https://erden.sh is the website, not the registry: --registry https://erden.sh means https://registry.erden.sh.
 
 Registry transport:
   Add, install, login, logout, publish, publication status, and query use one origin-scoped credential when present.
@@ -415,7 +422,7 @@ async function retryCliAuthentication<Value>(
 function nearestProjectRegistry(cwd: string): string | undefined {
     // No project is the one reason to fall back: a project that cannot be read must not send a credential elsewhere.
     try {
-        return loadManifest({ from: cwd }).manifest.registry;
+        return projectRegistryOrigin(loadManifest({ from: cwd }).manifest.registry);
     } catch (cause) {
         if (cause instanceof ManifestNotFoundError) {
             return undefined;
@@ -425,12 +432,39 @@ function nearestProjectRegistry(cwd: string): string | undefined {
 }
 
 function authenticationOrigin(explicit: string | undefined, runtime: CliRuntime): string {
-    const raw = explicit ?? nearestProjectRegistry(runtime.cwd()) ?? DEFAULT_REGISTRY_ORIGIN;
+    if (explicit !== undefined) {
+        const origin = typedRegistryOrigin(explicit);
+        if (origin === undefined) {
+            throw new CliUsageError(REGISTRY_ORIGIN_USAGE);
+        }
+        const typed = normalizeRegistryOrigin(explicit);
+        if (isErdenWebsiteOrigin(typed)) {
+            runtime.stderr.write(`${terminalText(typed)} is the Erden website; using its registry, ${origin}\n`);
+        }
+        return origin;
+    }
+    const raw = nearestProjectRegistry(runtime.cwd()) ?? DEFAULT_REGISTRY_ORIGIN;
     const origin = normalizeRegistryOrigin(raw);
     if (origin !== raw) {
         throw new CliUsageError('registry must be one canonical HTTP(S) origin');
     }
     return origin;
+}
+
+/**
+ * Before add, update or a networked install: a manifest naming the Erden website would otherwise ask the website for
+ * releases, and its 404s read as "not found". Any other manifest problem is left to the command, which reports it.
+ */
+function refuseWebsiteRegistry(selection: Readonly<{ from: string } | { manifestPath: string }>): void {
+    let registry: string | undefined;
+    try {
+        registry = loadManifest(
+            'from' in selection ? { from: selection.from } : { explicitPath: selection.manifestPath },
+        ).manifest.registry;
+    } catch {
+        return;
+    }
+    projectRegistryOrigin(registry);
 }
 
 function authenticationArguments(command: 'login' | 'logout', arguments_: ReadonlyArray<string>): string | undefined {
@@ -463,6 +497,7 @@ async function loginCommand(arguments_: ReadonlyArray<string>, runtime: CliRunti
         cancellation.abort();
     }, DEVICE_LOGIN_LIMITS.deviceLifetimeMilliseconds);
     deadlineTimer.unref();
+    let begun = false;
     try {
         const requestId = authentication.requestId();
         const challenge = await retryCliAuthentication(
@@ -479,6 +514,7 @@ async function loginCommand(arguments_: ReadonlyArray<string>, runtime: CliRunti
         ) {
             throw new Error('The device login challenge is invalid');
         }
+        begun = true;
         const challengeDeadline = Math.min(challenge.expiresAt, localDeadline);
         runtime.stdout.write(
             `Open ${terminalText(challenge.verificationUrl)} and enter code ${terminalText(challenge.userCode)}\n`,
@@ -542,16 +578,35 @@ async function loginCommand(arguments_: ReadonlyArray<string>, runtime: CliRunti
         }
         runtime.stderr.write('Erden login expired [DEVICE_LOGIN_EXPIRED]\n');
         return CLI_EXIT.operational;
-    } catch {
+    } catch (cause) {
         runtime.stderr.write(
             cancellation.signal.aborted
                 ? 'Erden login expired [DEVICE_LOGIN_EXPIRED]\n'
-                : 'Erden login could not complete [DEVICE_LOGIN_FAILED]\n',
+                : `Erden login could not complete [DEVICE_LOGIN_FAILED]\n${notARegistryHint(origin, begun, cause)}`,
         );
         return CLI_EXIT.operational;
     } finally {
         clearTimeout(deadlineTimer);
     }
+}
+
+/**
+ * A first request answered with something that is not a device login challenge (a 404 page, another service's JSON)
+ * means the origin is not an Erden registry. Say so, and name the hosted registry, rather than fail with no reason.
+ */
+function notARegistryHint(origin: string, begun: boolean, cause: unknown): string {
+    if (
+        begun ||
+        !(cause instanceof RegistryClientError) ||
+        (cause.code !== 'CLIENT_RESPONSE_INVALID' && cause.code !== 'CLIENT_NOT_FOUND')
+    ) {
+        return '';
+    }
+    const hosted =
+        origin === DEFAULT_REGISTRY_ORIGIN
+            ? ''
+            : ` The hosted Erden registry is ${DEFAULT_REGISTRY_ORIGIN}: run erden login --registry ${DEFAULT_REGISTRY_ORIGIN}.`;
+    return `${terminalText(origin)} did not answer as an Erden registry.${hosted}\n`;
 }
 
 async function logoutCommand(arguments_: ReadonlyArray<string>, runtime: CliRuntime): Promise<number> {
@@ -796,13 +851,18 @@ async function installCommand(arguments_: ReadonlyArray<string>, runtime: CliRun
     if (config !== undefined && positional.length !== 0) {
         throw new CliUsageError('install cannot combine a project directory with --config');
     }
+    const cwd = runtime.cwd();
+    const installSelection =
+        config === undefined
+            ? { from: positional[0] === undefined ? cwd : resolve(cwd, positional[0]) }
+            : { manifestPath: resolve(cwd, config) };
+    if (!offline) {
+        refuseWebsiteRegistry(installSelection);
+    }
     try {
-        const cwd = runtime.cwd();
         const report = await Effect.runPromise(
             runtime.services.install.install({
-                ...(config === undefined
-                    ? { from: positional[0] === undefined ? cwd : resolve(cwd, positional[0]) }
-                    : { manifestPath: resolve(cwd, config) }),
+                ...installSelection,
                 offline,
                 frozenLockfile,
             }),
@@ -858,9 +918,12 @@ async function dependencyCommand(
             );
         }
     }
+    const cwd = runtime.cwd();
+    const selection = config === undefined ? { from: cwd } : { manifestPath: resolve(cwd, config) };
+    if (command === 'add') {
+        refuseWebsiteRegistry(selection);
+    }
     try {
-        const cwd = runtime.cwd();
-        const selection = config === undefined ? { from: cwd } : { manifestPath: resolve(cwd, config) };
         const report =
             command === 'add'
                 ? await Effect.runPromise(
@@ -917,12 +980,14 @@ async function updateCommand(arguments_: ReadonlyArray<string>, runtime: CliRunt
     if (identifier !== undefined && !isScopedAlias(identifier) && !isCanonicalOntologyIri(identifier)) {
         throw new CliUsageError('update target must be one exact authored alias or canonical IRI');
     }
+    const cwd = runtime.cwd();
+    const updateSelection = config === undefined ? { from: cwd } : { manifestPath: resolve(cwd, config) };
+    refuseWebsiteRegistry(updateSelection);
     try {
-        const cwd = runtime.cwd();
         const report = await Effect.runPromise(
             runtime.services.dependencies.update({
                 ...(identifier === undefined ? {} : { identifier }),
-                ...(config === undefined ? { from: cwd } : { manifestPath: resolve(cwd, config) }),
+                ...updateSelection,
             }),
         );
         runtime.stdout.write(
@@ -1291,6 +1356,10 @@ export async function runCli(arguments_: ReadonlyArray<string>, runtime: CliRunt
         }
         throw new CliUsageError(`unknown command: ${command}`);
     } catch (cause) {
+        if (cause instanceof RegistryWebsiteError) {
+            runtime.stderr.write(renderRegistryWebsiteError(cause));
+            return CLI_EXIT.operational;
+        }
         return cause instanceof CliUsageError || cause instanceof CliRegistryUsageError
             ? usageFailure(runtime, cause.message)
             : unexpectedOperationalFailure(runtime);
