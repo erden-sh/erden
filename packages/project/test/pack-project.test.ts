@@ -826,6 +826,111 @@ describe('PackProject', () => {
         });
     });
 
+    it('refuses locally what the registry would refuse: metadata bounds and another registry', async () => {
+        const { root, service } = await fixture();
+        const manifest = normalizeManifestV1({
+            schemaVersion: 1,
+            canonicalIri: 'https://example.test/project',
+            alias: '@example/project',
+            ownedIriPrefixes: ['https://example.test/project#'],
+            title: 'x'.repeat(300),
+            sources: { ontology: ['ontology.ttl'] },
+        });
+        await fs.writeFile(join(root, 'erden.config.json'), serializeManifestV1(manifest, 'json'));
+        await fs.writeFile(join(root, 'erden.lock'), serializeLockfileBytes(makeEmptyLockfile(manifest, TOOLCHAIN)));
+        await expect(Effect.runPromise(service.pack({ version: '1.2.3', from: root }))).rejects.toMatchObject({
+            code: 'PACK_PROJECT_CANDIDATE_INVALID',
+            message:
+                'The registry would refuse this package: the manifest title must be at most 256 bytes and its description at most 4096 bytes, as well-formed text',
+        });
+        const registered = normalizeManifestV1({
+            schemaVersion: 1,
+            canonicalIri: 'https://example.test/project',
+            alias: '@example/project',
+            ownedIriPrefixes: ['https://example.test/project#'],
+            registry: 'https://registry.example',
+            sources: { ontology: ['ontology.ttl'] },
+        });
+        await fs.writeFile(join(root, 'erden.config.json'), serializeManifestV1(registered, 'json'));
+        await fs.writeFile(join(root, 'erden.lock'), serializeLockfileBytes(makeEmptyLockfile(registered, TOOLCHAIN)));
+        await expect(
+            Effect.runPromise(service.pack({ version: '1.2.3', from: root, registryOrigin: 'https://other.example' })),
+        ).rejects.toMatchObject({
+            code: 'PACK_PROJECT_CANDIDATE_INVALID',
+            message:
+                'The registry would refuse this package: its manifest names the registry https://registry.example, not https://other.example',
+        });
+        await expect(
+            Effect.runPromise(
+                service.pack({ version: '1.2.3', from: root, registryOrigin: 'https://registry.example' }),
+            ),
+        ).resolves.toMatchObject({ output: { status: 'written' } });
+        await expect(
+            Effect.runPromise(
+                service.pack({ version: '1.2.4', from: root, registryOrigin: 'https://registry.example/' }),
+            ),
+        ).rejects.toMatchObject({ code: 'PACK_PROJECT_INVALID_INPUT' });
+    });
+
+    it('packs direct dependencies whose alias order differs from their canonical IRI order', async () => {
+        const { root, service } = await fixture();
+        const first = 'https://z.dependency.example/x';
+        const second = 'https://a.dependency.example/y';
+        const manifest = normalizeManifestV1({
+            schemaVersion: 1,
+            canonicalIri: 'https://example.test/project',
+            alias: '@example/project',
+            ownedIriPrefixes: ['https://example.test/project#'],
+            registry: 'https://registry.example',
+            dependencies: { '@dependency/x': '*', '@dependency/y': '*' },
+            sources: { ontology: ['ontology.ttl'] },
+        });
+        const packages = new Map(
+            [first, second].map((canonicalIri) => [
+                canonicalIri,
+                encodePackage({
+                    canonicalIri,
+                    version: '1.0.0',
+                    dependencies: [],
+                    validator: TOOLCHAIN.validator,
+                    reasoner: TOOLCHAIN.reasoner,
+                    files: [],
+                }),
+            ]),
+        );
+        const resolved = await Effect.runPromise(
+            makeDependencyResolver({
+                resolveAlias: (_origin, alias) =>
+                    Promise.resolve({ alias, canonicalIri: alias === '@dependency/x' ? first : second }),
+                listPublished: (_origin, canonicalIri) => {
+                    const encoded = packages.get(canonicalIri);
+                    return Promise.resolve(
+                        encoded === undefined
+                            ? []
+                            : [
+                                  {
+                                      canonicalIri,
+                                      version: '1.0.0',
+                                      archiveSha256: encoded.archiveSha256,
+                                      manifest: encoded.manifest,
+                                  },
+                              ],
+                    );
+                },
+            }).resolve({ manifest, toolchain: TOOLCHAIN }),
+        );
+        expect(resolved.lock.directDependencies.map(({ canonicalIri }) => canonicalIri)).toEqual([first, second]);
+        await fs.writeFile(join(root, 'erden.config.json'), serializeManifestV1(manifest, 'json'));
+        await fs.writeFile(join(root, 'erden.lock'), serializeLockfileBytes(resolved.lock));
+        const outcome = await Effect.runPromise(
+            service.pack({ version: '1.2.3', from: root, registryOrigin: 'https://registry.example' }),
+        ).then(
+            (report) => report.output.status,
+            (error: unknown) => (error as { code?: string }).code,
+        );
+        expect(outcome).toBe('written');
+    });
+
     it('rejects a valid archive from a codec that does not bind the requested project snapshot', async () => {
         const { root } = await fixture();
         const wrong = encodePackage({

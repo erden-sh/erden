@@ -833,6 +833,7 @@ export async function runPublishCommand(
             await Effect.runPromise(
                 context.pack.pack({
                     version: options.version,
+                    registryOrigin,
                     ...(options.config === undefined
                         ? options.projectDirectory === undefined
                             ? { from: cwd }
