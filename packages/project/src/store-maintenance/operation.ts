@@ -717,6 +717,20 @@ function snapshotPruneOptions(input: StorePruneOptions): Readonly<{
 
 function pruneReportFromStatus(status: StoreStatusReport, dryRun: boolean): StorePruneReport {
     if (
+        !dryRun &&
+        status.transaction === 'idle' &&
+        status.objects.busy.length > 0 &&
+        status.registrations.stale.length === 0 &&
+        status.registrations.corrupt.length === 0 &&
+        status.registrations.busy.length === 0 &&
+        status.objects.corrupt.length === 0
+    ) {
+        throw new StoreMaintenanceError(
+            'STORE_MAINTENANCE_PRUNE_BLOCKED',
+            'A package is being downloaded into the local store, or its download stopped less than 10 minutes ago; run erden store prune again once it finishes',
+        );
+    }
+    if (
         status.transaction === 'busy' ||
         status.registrations.stale.length > 0 ||
         status.registrations.corrupt.length > 0 ||
@@ -864,12 +878,34 @@ export function makeStoreMaintenanceService(
                             cause,
                         ),
                 });
-                const status = yield* runStoreStatus(
+                let status = yield* runStoreStatus(
                     states,
                     toolchains,
                     store,
                     Object.freeze({ defaultStoreRoot: () => storeRoot }),
                 );
+                if (!options.dryRun && status.transaction === 'idle' && status.objects.busy.length > 0) {
+                    // Busy objects are usually stages an interrupted download left behind. The store's recovery pass
+                    // removes the abandoned ones; a stage still being written stays busy and blocks the prune below.
+                    yield* store
+                        .pruneStore({ storeRoot, registrationGenerations: [], archiveSha256s: [] })
+                        .pipe(
+                            Effect.mapError(
+                                (cause) =>
+                                    new StoreMaintenanceError(
+                                        'STORE_MAINTENANCE_PRUNE_BLOCKED',
+                                        'The abandoned package downloads could not be removed safely',
+                                        cause,
+                                    ),
+                            ),
+                        );
+                    status = yield* runStoreStatus(
+                        states,
+                        toolchains,
+                        store,
+                        Object.freeze({ defaultStoreRoot: () => storeRoot }),
+                    );
+                }
                 if (!options.dryRun && status.transaction === 'busy') {
                     const recoveredInput = yield* store
                         .pruneStore({ storeRoot, registrationGenerations: [], archiveSha256s: [] })
