@@ -920,6 +920,55 @@ describe('StoreMaintenance', () => {
         expect(await fs.readdir(storeRoot)).toEqual(['objects', 'registrations']);
     });
 
+    it('prunes past a stage an interrupted download abandoned, and says why when a download is still running', async () => {
+        const root = makeTestTempRoot('erden-store-prune-stale-stage-');
+        roots.push(root);
+        const storeRoot = join(root, 'store');
+        const encoded = encodePackage({
+            canonicalIri: 'https://example.test/unreferenced-package',
+            version: '1.0.0',
+            dependencies: [],
+            validator: TOOLCHAIN.validator,
+            reasoner: TOOLCHAIN.reasoner,
+            files: [{ path: 'ontology.ttl', bytes: '<urn:unused> <urn:p> <urn:o> .\n', executable: false }],
+        });
+        const store = makeLocalPackageStore();
+        await Effect.runPromise(
+            store.put({
+                storeRoot,
+                expected: {
+                    canonicalIri: 'https://example.test/unreferenced-package',
+                    version: '1.0.0',
+                    archiveSha256: encoded.archiveSha256,
+                    dependencies: [],
+                },
+                toolchain: TOOLCHAIN,
+                archive: encoded.archiveBytes,
+            }),
+        );
+        const service = makeStoreMaintenanceService(
+            makeProjectDependencyStateService(makeNodeProjectDependencyStateFileSystemPort()),
+            makeCurrentToolchainService(() => TOOLCHAIN),
+            store,
+            { defaultStoreRoot: () => storeRoot },
+        );
+        const stage = join(storeRoot, 'objects', `.${digest('d')}.stage-27f4e87b-7704-4b27-8276-a30e8495dc55`);
+        await fs.mkdir(stage);
+        await fs.writeFile(join(stage, 'archive.erdenpkg'), 'partial');
+        await expect(Effect.runPromise(service.prune({}))).rejects.toMatchObject({
+            code: 'STORE_MAINTENANCE_PRUNE_BLOCKED',
+            message:
+                'A package is being downloaded into the local store, or its download stopped less than 10 minutes ago; run erden store prune again once it finishes',
+        });
+        expect(await fs.readdir(join(storeRoot, 'objects'))).toContain(basename(stage));
+        const old = new Date(Date.now() - 11 * 60 * 1000);
+        await fs.utimes(join(stage, 'archive.erdenpkg'), old, old);
+        await fs.utimes(stage, old, old);
+        const pruned = await Effect.runPromise(service.prune({}));
+        expect(pruned).toMatchObject({ outcome: 'pruned', objects: { total: 1, removed: [encoded.archiveSha256] } });
+        expect(await fs.readdir(join(storeRoot, 'objects'))).toEqual([]);
+    });
+
     it('reports a real fully-referenced prune as a decoded non-dry no-op without mutation or prune delegation', async () => {
         const root = makeTestTempRoot('erden-store-prune-referenced-real-');
         roots.push(root);

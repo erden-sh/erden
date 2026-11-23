@@ -1,3 +1,7 @@
+import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { Readable } from 'node:stream';
+
 import { normalizeRegistryOrigin } from '@erden/contracts';
 
 import { RegistryClientError, decodeCanonicalJson, encodeCanonicalJson } from './wire.js';
@@ -6,6 +10,142 @@ export interface RegistryHttpRuntime {
     readonly fetch: typeof fetch;
     readonly sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }
+
+/** The statuses whose response has no body (RFC 9110), which `Response` refuses to give one. */
+const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 103, 204, 205, 304]);
+
+function abortError(signal: AbortSignal | undefined): Error {
+    const reason: unknown = signal?.reason;
+    return reason instanceof Error ? reason : new DOMException('The operation was aborted', 'AbortError');
+}
+
+/**
+ * `fetch` over `node:http` and `node:https`, for the requests this client makes. Node's built-in `fetch` (undici) fails
+ * an internal assertion, `assert(!this.paused)`, when a response body that ends by closing the connection (HTTP/1.0
+ * without a length) arrives faster than it is read. That assertion throws from a socket callback, outside any promise,
+ * and ends the process. `node:http` reads such a body with ordinary backpressure, and every failure here rejects the
+ * returned promise or errors the body stream, so it reaches the caller as a transport error.
+ *
+ * It does what this client asks of `fetch` and no more: it follows no redirect (`redirect: 'manual'`), keeps no
+ * cookies or cache, decodes no content (it sends no `accept-encoding`), and takes a body only as a `Blob`, a byte
+ * array, a string or a `ReadableStream` of bytes.
+ */
+export async function nodeRegistryFetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
+    if (input instanceof Request) {
+        throw new TypeError('nodeRegistryFetch takes a URL, not a Request');
+    }
+    const url = new URL(input);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        throw new TypeError(`unsupported protocol ${url.protocol}`);
+    }
+    const signal = init.signal ?? undefined;
+    if (signal?.aborted === true) {
+        throw abortError(signal);
+    }
+    const headers: Record<string, string> = {};
+    new Headers(init.headers).forEach((value, name) => {
+        headers[name] = value;
+    });
+    const source = init.body;
+    let bytes: Uint8Array | undefined;
+    let stream: ReadableStream<Uint8Array> | undefined;
+    if (source instanceof ReadableStream) {
+        stream = source as ReadableStream<Uint8Array>;
+    } else if (source instanceof Blob) {
+        // Streamed with its known size, so the request still carries a content-length.
+        stream = source.stream();
+        if (headers['content-length'] === undefined) {
+            headers['content-length'] = String(source.size);
+        }
+    } else if (source instanceof Uint8Array) {
+        bytes = source;
+    } else if (typeof source === 'string') {
+        bytes = new TextEncoder().encode(source);
+    } else if (source !== undefined && source !== null) {
+        throw new TypeError('unsupported request body');
+    }
+    if (bytes !== undefined && headers['content-length'] === undefined) {
+        headers['content-length'] = String(bytes.byteLength);
+    }
+    const method = (init.method ?? 'GET').toUpperCase();
+    return await new Promise<Response>((resolvePromise, reject) => {
+        let settled = false;
+        const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, { method, headers });
+        function onAbort(): void {
+            const error = abortError(signal);
+            request.destroy(error);
+            fail(error);
+        }
+        function fail(error: unknown): void {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            signal?.removeEventListener('abort', onAbort);
+            reject(error instanceof Error ? error : new TypeError('fetch failed', { cause: error }));
+        }
+        signal?.addEventListener('abort', onAbort, { once: true });
+        request.on('error', fail);
+        request.on('response', (message: IncomingMessage) => {
+            if (settled) {
+                message.destroy();
+                return;
+            }
+            const status = message.statusCode ?? 0;
+            let response: Response;
+            try {
+                const responseHeaders = new Headers();
+                for (let index = 0; index + 1 < message.rawHeaders.length; index += 2) {
+                    responseHeaders.append(
+                        message.rawHeaders[index] as string,
+                        message.rawHeaders[index + 1] as string,
+                    );
+                }
+                const empty = method === 'HEAD' || NULL_BODY_STATUSES.has(status);
+                response = new Response(empty ? null : (Readable.toWeb(message) as ReadableStream<Uint8Array>), {
+                    status,
+                    statusText: message.statusMessage ?? '',
+                    headers: responseHeaders,
+                });
+                if (empty) {
+                    message.resume();
+                }
+            } catch (error) {
+                message.destroy();
+                request.destroy();
+                fail(new TypeError('fetch failed', { cause: error }));
+                return;
+            }
+            settled = true;
+            if (signal !== undefined) {
+                signal.removeEventListener('abort', onAbort);
+                signal.addEventListener(
+                    'abort',
+                    () => {
+                        message.destroy(abortError(signal));
+                    },
+                    { once: true },
+                );
+            }
+            resolvePromise(response);
+        });
+        if (stream === undefined) {
+            request.end(
+                bytes === undefined ? undefined : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+            );
+            return;
+        }
+        const body = Readable.fromWeb(stream as Parameters<typeof Readable.fromWeb>[0]);
+        body.on('error', (error) => {
+            request.destroy(error);
+            fail(error);
+        });
+        body.pipe(request);
+    });
+}
+
+/** The default runtime: {@link nodeRegistryFetch}, never the global `fetch`. */
+const NODE_REGISTRY_RUNTIME: RegistryHttpRuntime = Object.freeze({ fetch: nodeRegistryFetch });
 
 export interface RegistryJsonRequest {
     readonly registryOrigin: string;
@@ -201,7 +341,16 @@ export async function readRegistryResponseBody(
     } catch (error) {
         cancel();
         await cancellation;
-        throw error;
+        if (error instanceof RegistryClientError) {
+            throw error;
+        }
+        if (aborted()) {
+            throw signal.reason instanceof RegistryClientError
+                ? signal.reason
+                : new RegistryClientError('CLIENT_ABORTED');
+        }
+        // A connection that closes or fails mid-body is a transport failure, which the caller may retry.
+        throw new RegistryClientError('CLIENT_TRANSPORT');
     } finally {
         signal.removeEventListener('abort', cancel);
         if (cancellation !== undefined) {
@@ -224,7 +373,7 @@ export async function cancelRegistryResponseBody(response: Response): Promise<vo
 
 export async function openRegistryHttpResponse(
     raw: RegistryHttpRequest,
-    runtime: RegistryHttpRuntime = Object.freeze({ fetch }),
+    runtime: RegistryHttpRuntime = NODE_REGISTRY_RUNTIME,
 ): Promise<OpenRegistryHttpResponse> {
     let origin: string;
     let url: URL;
@@ -340,7 +489,7 @@ export type SignedPutOutcome = 'already-present' | 'stored';
  */
 export async function putToSignedUrl(
     raw: SignedPutRequest,
-    runtime: RegistryHttpRuntime = Object.freeze({ fetch }),
+    runtime: RegistryHttpRuntime = NODE_REGISTRY_RUNTIME,
 ): Promise<SignedPutOutcome> {
     let url: URL;
     try {
@@ -442,7 +591,7 @@ export async function putToSignedUrl(
 
 export async function requestRegistryJsonWire(
     raw: RegistryJsonRequest,
-    runtime: RegistryHttpRuntime = Object.freeze({ fetch }),
+    runtime: RegistryHttpRuntime = NODE_REGISTRY_RUNTIME,
 ): Promise<RegistryJsonWireResponse> {
     const timeout = raw.timeoutMilliseconds ?? 15000;
     const maximum = raw.maximumResponseBytes ?? 64 * 1024;
@@ -488,7 +637,7 @@ export async function requestRegistryJsonWire(
 
 export async function requestRegistryJson(
     raw: RegistryJsonRequest,
-    runtime: RegistryHttpRuntime = Object.freeze({ fetch }),
+    runtime: RegistryHttpRuntime = NODE_REGISTRY_RUNTIME,
 ): Promise<RegistryJsonResponse> {
     const response = await requestRegistryJsonWire(raw, runtime);
     return Object.freeze({ status: response.status, body: response.body });

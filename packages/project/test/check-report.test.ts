@@ -532,6 +532,57 @@ describe('erden.check-report/v1 schema and canonical encoding', () => {
         expect(() => decodeCheckProjectReport(report)).toThrow();
     });
 
+    it('says SHACL failed because shapes did not fire on their self-test fixtures, not with zero unexplained', () => {
+        const report = mutableReport();
+        addPassingShape(report);
+        const details = report.stages.shacl.details as NonNullable<MutableReport['stages']['shacl']['details']>;
+        details.conforms = false;
+        details.selfTest = [
+            {
+                shape: 'https://example.test/root#shape',
+                fired: false,
+                reason: 'the generated fixture does not trigger this shape; add an sx:selftestFixture literal',
+            },
+        ];
+        report.stages.shacl.status = 'failed';
+        report.stages.shacl.failureCodes = ['shacl-conformance'];
+        report.outcome = 'failed';
+        const human = renderCheckProjectReport(decodeCheckProjectReport(report));
+        expect(human).toContain(
+            'SHACL: failed (shacl-conformance: 0 violations; 1 of 1 shape did not fire on its self-test fixture)\n',
+        );
+        expect(human).toContain(
+            '- [shacl/self-test] 1 shape did not fire on its self-test fixture, so SHACL fails even with no violation',
+        );
+        expect(human).toContain(
+            '- [shacl] self-test did not fire for https://example.test/root#shape: the generated fixture does not trigger this shape; add an sx:selftestFixture literal\n',
+        );
+        details.counts.violation = 2;
+        first(details.shapes).resultCount = 2;
+        const finding = {
+            severity: 'Violation' as const,
+            focus: 'https://example.test/root#bad',
+            path: null,
+            value: null,
+            component: 'http://www.w3.org/ns/shacl#MinCountConstraintComponent',
+            message: 'missing',
+            shape: 'https://example.test/root#shape',
+            shapeSourceIds: ['root:shape:0000'],
+            shapeOwners: [
+                {
+                    role: 'root' as const,
+                    canonicalIri: 'https://example.test/root',
+                    ownedIriPrefixes: ['https://example.test/root#'],
+                },
+            ],
+        };
+        details.findings = [finding, { ...finding }];
+        details.selfTest = [{ shape: 'https://example.test/root#shape', fired: true, reason: null }];
+        expect(renderCheckProjectReport(decodeCheckProjectReport(report))).toContain(
+            'SHACL: failed (shacl-conformance: 2 violations)\n',
+        );
+    });
+
     it('accepts canonically sorted duplicate SHACL findings as a meaningful multiset', () => {
         const report = mutableReport();
         report.sources.files.push({

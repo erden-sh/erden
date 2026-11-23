@@ -1423,4 +1423,85 @@ describe('LocalPackageStore', () => {
         expect(writes).toBe(0);
         expect(await fs.readdir(join(root, 'streamed', 'objects'))).toEqual([]);
     });
+    it('reclaims a stage an interrupted download abandoned, so the package is fetched again instead of busy', async () => {
+        const root = makeTestTempRoot('erden-store-stale-');
+        roots.push(root);
+        const storeRoot = join(root, 'store');
+        const { a, b, lock } = fixture();
+        const [aNode, bNode] = lock.packages;
+        if (aNode === undefined || bNode === undefined) {
+            throw new Error('fixture package');
+        }
+        const service = makeLocalPackageStore();
+        await Effect.runPromise(
+            service.put({ storeRoot, expected: aNode, toolchain: lock.toolchain, archive: a.archiveBytes }),
+        );
+        // What an interrupted 0.2.0 download left: the archive and a read-only partial extraction.
+        const stage = join(storeRoot, 'objects', `.${b.archiveSha256}.stage-fbee0246-387b-43e8-af40-d8463435d892`);
+        const extract = join(stage, '.package.erden-extract-4cd63539-1c4a-4fab-9266-f9ed1b155f6c');
+        await fs.mkdir(join(extract, 'nested'), { recursive: true });
+        await fs.writeFile(join(stage, 'archive.erdenpkg'), b.archiveBytes.subarray(0, 10));
+        await fs.writeFile(join(extract, 'nested', 'b.ttl'), '<urn:b>');
+        await fs.chmod(join(extract, 'nested', 'b.ttl'), 0o444);
+        await fs.chmod(join(extract, 'nested'), 0o555);
+        await fs.chmod(extract, 0o555);
+        async function availability() {
+            return await Effect.runPromise(service.verifyLockAvailability({ storeRoot, lock }));
+        }
+        // A stage that changed recently may belong to a download still running.
+        await expect(availability()).resolves.toMatchObject({ busy: [b.archiveSha256] });
+        expect(await fs.readdir(join(storeRoot, 'objects'))).toContain(basename(stage));
+
+        const old = new Date(Date.now() - 11 * 60 * 1000);
+        for (const path of [
+            join(extract, 'nested', 'b.ttl'),
+            join(extract, 'nested'),
+            extract,
+            join(stage, 'archive.erdenpkg'),
+            stage,
+        ]) {
+            await fs.utimes(path, old, old);
+        }
+        await expect(availability()).resolves.toMatchObject({ busy: [], missing: [b.archiveSha256] });
+        expect(await fs.readdir(join(storeRoot, 'objects'))).toEqual([a.archiveSha256]);
+        await expect(
+            Effect.runPromise(
+                service.put({ storeRoot, expected: bNode, toolchain: lock.toolchain, archive: b.archiveBytes }),
+            ),
+        ).resolves.toMatchObject({ status: 'stored' });
+    });
+
+    it('leaves an old stage holding a symbolic link for explicit repair, and prune reclaims plain abandoned stages', async () => {
+        const root = makeTestTempRoot('erden-store-stale-prune-');
+        roots.push(root);
+        const storeRoot = join(root, 'store');
+        const { a, b, lock } = fixture();
+        const [aNode] = lock.packages;
+        if (aNode === undefined) {
+            throw new Error('fixture package');
+        }
+        const service = makeLocalPackageStore();
+        await Effect.runPromise(
+            service.put({ storeRoot, expected: aNode, toolchain: lock.toolchain, archive: a.archiveBytes }),
+        );
+        const old = new Date(Date.now() - 11 * 60 * 1000);
+        const linked = join(storeRoot, 'objects', `.${b.archiveSha256}.stage-0123456789abcdef`);
+        await fs.mkdir(linked);
+        await fs.symlink(join(root, 'elsewhere'), join(linked, 'link'));
+        await fs.utimes(linked, old, old);
+        await expect(Effect.runPromise(service.verifyLockAvailability({ storeRoot, lock }))).resolves.toMatchObject({
+            busy: [b.archiveSha256],
+        });
+        await fs.rm(linked, { recursive: true });
+
+        const plain = join(storeRoot, 'objects', `.${b.archiveSha256}.stage-fedcba9876543210`);
+        await fs.mkdir(plain);
+        await fs.writeFile(join(plain, 'archive.erdenpkg'), 'x');
+        await fs.utimes(join(plain, 'archive.erdenpkg'), old, old);
+        await fs.utimes(plain, old, old);
+        await expect(
+            Effect.runPromise(service.pruneStore({ storeRoot, registrationGenerations: [], archiveSha256s: [] })),
+        ).resolves.toMatchObject({ status: 'hit' });
+        expect(await fs.readdir(join(storeRoot, 'objects'))).toEqual([a.archiveSha256]);
+    });
 });

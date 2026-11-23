@@ -7,6 +7,11 @@ import { valid } from 'semver';
 
 import {
     checkLockConsistency,
+    decodePublicationCandidatePublicMetadata,
+    isRegistryOrigin,
+    normalizeRegistryOrigin,
+    parseLockfile,
+    parseManifestText,
     decodeLockfileValue,
     decodeLockToolchain,
     nodeCurrentToolchainService,
@@ -52,6 +57,11 @@ export interface PackProjectOptions {
     readonly from?: string;
     readonly manifestPath?: string;
     readonly outputPath?: string;
+    /**
+     * The registry `erden publish` will upload to. With it, pack also refuses what that registry would refuse about the
+     * lock's and manifest's registry; without it, those checks wait for publish.
+     */
+    readonly registryOrigin?: string;
 }
 
 export interface PackProjectCodecShape {
@@ -173,7 +183,7 @@ function snapshotOptions(
         ) {
             throw new Error('shape');
         }
-        const allowed = new Set(['version', 'from', 'manifestPath', 'outputPath']);
+        const allowed = new Set(['version', 'from', 'manifestPath', 'outputPath', 'registryOrigin']);
         const values = new Map<string, unknown>();
         for (const name of Object.getOwnPropertyNames(value)) {
             if (!allowed.has(name)) {
@@ -189,6 +199,15 @@ function snapshotOptions(
         const from = values.get('from');
         const manifestPath = values.get('manifestPath');
         const outputPath = values.get('outputPath');
+        const registryOrigin = values.get('registryOrigin');
+        if (
+            registryOrigin !== undefined &&
+            (typeof registryOrigin !== 'string' ||
+                !isRegistryOrigin(registryOrigin) ||
+                normalizeRegistryOrigin(registryOrigin) !== registryOrigin)
+        ) {
+            throw new Error('registryOrigin');
+        }
         if (
             typeof version !== 'string' ||
             !exactVersion.test(version) ||
@@ -205,6 +224,7 @@ function snapshotOptions(
             ...(from === undefined ? {} : { from }),
             ...(manifestPath === undefined ? {} : { manifestPath }),
             ...(outputPath === undefined ? {} : { outputPath }),
+            ...(registryOrigin === undefined ? {} : { registryOrigin }),
         });
     } catch (cause) {
         throw new PackProjectError('PACK_PROJECT_INVALID_INPUT', 'The pack options are invalid', cause);
@@ -716,6 +736,118 @@ function dependencies(lock: LockfileV1): ReadonlyArray<ReferenceResolvedDependen
             });
         }),
     );
+}
+
+function candidateInvalid(message: string, cause?: unknown): PackProjectError {
+    return new PackProjectError(
+        'PACK_PROJECT_CANDIDATE_INVALID',
+        `The registry would refuse this package: ${message}`,
+        cause,
+    );
+}
+
+/** The archive's direct dependencies and the lock's direct edges hold the same releases, in any order. */
+function sameDependencyEdges(
+    lock: LockfileV1['directDependencies'],
+    archive: PackageManifestV1['dependencies'],
+): boolean {
+    if (lock.length !== archive.length) {
+        return false;
+    }
+    const remaining = new Map(archive.map((edge) => [edge.canonicalIri, edge]));
+    if (remaining.size !== archive.length) {
+        return false;
+    }
+    return lock.every((edge) => {
+        const other = remaining.get(edge.canonicalIri);
+        remaining.delete(edge.canonicalIri);
+        return (
+            other !== undefined &&
+            other.requested === edge.requested &&
+            other.version === edge.version &&
+            other.archiveSha256 === edge.archiveSha256
+        );
+    });
+}
+
+/**
+ * The consistency checks the registry runs on an uploaded package before it validates it (`storeCandidate` in the
+ * registry), run here on the same bytes: the shipped manifest and erden.lock, and the archive's generated manifest. A
+ * package the registry would refuse with a bare "candidate invalid" fails here instead, with the reason. Direct
+ * dependencies compare without regard to order, as the registry's validation does.
+ */
+function assertRegistryAcceptsCandidate(
+    input: Readonly<{
+        manifestFileName: string;
+        manifestBytes: Uint8Array;
+        lockBytes: Uint8Array;
+        archive: PackageManifestV1;
+        registryOrigin?: string;
+    }>,
+): void {
+    let manifest: ReturnType<typeof normalizePublicationManifestV1>;
+    try {
+        const loaded = parseManifestText({
+            filePath: resolve('/', input.manifestFileName),
+            text: new TextDecoder('utf-8', { fatal: true }).decode(input.manifestBytes),
+        });
+        manifest = normalizePublicationManifestV1(loaded.manifest);
+    } catch (cause) {
+        throw candidateInvalid('its manifest does not parse as a publishable manifest', cause);
+    }
+    try {
+        decodePublicationCandidatePublicMetadata({
+            title: manifest.title ?? null,
+            description: manifest.description ?? null,
+        });
+    } catch (cause) {
+        throw candidateInvalid(
+            'the manifest title must be at most 256 bytes and its description at most 4096 bytes, as well-formed text',
+            cause,
+        );
+    }
+    let lock: LockfileV1;
+    try {
+        lock = parseLockfile(input.lockBytes);
+    } catch (cause) {
+        throw candidateInvalid('its erden.lock does not parse', cause);
+    }
+    const archive = input.archive;
+    if (checkLockConsistency(manifest, lock.toolchain, lock).status !== 'consistent') {
+        throw candidateInvalid('its erden.lock does not match its manifest; run erden install and pack again');
+    }
+    if (lock.root.canonicalIri !== archive.canonicalIri || lock.root.alias !== manifest.alias) {
+        throw candidateInvalid("its erden.lock names another root than the package's manifest");
+    }
+    if (archive.version.length === 0) {
+        throw candidateInvalid('it has no version');
+    }
+    if (lock.registryOrigin === null && lock.directDependencies.length !== 0) {
+        throw candidateInvalid('its erden.lock has direct dependencies but names no registry they came from');
+    }
+    if (
+        lock.toolchain.validator.version !== archive.toolchain.validator.version ||
+        lock.toolchain.validator.sha256 !== archive.toolchain.validator.sha256 ||
+        lock.toolchain.reasoner.version !== archive.toolchain.reasoner.version ||
+        lock.toolchain.reasoner.sha256 !== archive.toolchain.reasoner.sha256
+    ) {
+        throw candidateInvalid("its erden.lock was made with another toolchain than the package's");
+    }
+    if (!sameDependencyEdges(lock.directDependencies, archive.dependencies)) {
+        throw candidateInvalid('its direct dependencies differ from the ones its erden.lock resolved');
+    }
+    const target = input.registryOrigin;
+    if (target === undefined) {
+        return;
+    }
+    if (lock.registryOrigin !== null && lock.registryOrigin !== target) {
+        throw candidateInvalid(
+            `its erden.lock resolved dependencies from ${lock.registryOrigin}, not ${target}; run erden install against ${target}`,
+        );
+    }
+    if (manifest.registry !== undefined && manifest.registry !== target) {
+        throw candidateInvalid(`its manifest names the registry ${manifest.registry}, not ${target}`);
+    }
 }
 
 function manifestMatchesSnapshot(
@@ -1565,6 +1697,13 @@ async function packPromise(
                 'The package codec returned an inconsistent archive result',
             );
         }
+        assertRegistryAcceptsCandidate({
+            manifestFileName: basename(location.filePath),
+            manifestBytes: manifestFile.bytes,
+            lockBytes: lockFile.bytes,
+            archive: validated.manifest,
+            ...(options.registryOrigin === undefined ? {} : { registryOrigin: options.registryOrigin }),
+        });
         const outputPath = outputPathFor(options, project);
         let outputRoot: RootSnapshot;
         try {

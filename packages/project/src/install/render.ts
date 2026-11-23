@@ -37,6 +37,11 @@ export function renderInstallProjectError(error: InstallProjectError): string {
         for (const digest of error.availability.busy) {
             lines.push(`- busy ${digest}`);
         }
+        if (error.availability.busy.length > 0) {
+            lines.push(
+                'A busy package is being downloaded by another erden, or its download stopped less than 10 minutes ago; erden install clears a stopped one after that, so run it again then.',
+            );
+        }
     }
     if (error instanceof InstallProjectTransactionPendingError) {
         for (const name of error.residue) {

@@ -772,7 +772,11 @@ function renderReport(report: PublicationReportSummaryV1): string {
     const shacl =
         validation.shaclCounts === null
             ? ''
-            : `\nSHACL: violation=${String(validation.shaclCounts.violation)}, warning=${String(validation.shaclCounts.warning)}, info=${String(validation.shaclCounts.info)}`;
+            : `\nSHACL: violation=${String(validation.shaclCounts.violation)}, warning=${String(validation.shaclCounts.warning)}, info=${String(validation.shaclCounts.info)}${
+                  validation.stages.shacl === 'failed' && validation.shaclCounts.violation === 0
+                      ? '\nSHACL failed with no violation: shapes did not fire on their self-test fixtures, or the shapes use SHACL the engine cannot run. erden check on the project names the shapes, as does the report page.'
+                      : ''
+              }`;
     const questions =
         validation.competencyQuestionCounts === null
             ? ''
@@ -893,6 +897,7 @@ export async function runPublishCommand(
             await Effect.runPromise(
                 context.pack.pack({
                     version: options.version,
+                    registryOrigin,
                     ...(options.config === undefined
                         ? options.projectDirectory === undefined
                             ? { from: cwd }

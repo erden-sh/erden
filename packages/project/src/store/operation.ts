@@ -1057,11 +1057,114 @@ async function pathTreeMatchesSnapshot(
     );
 }
 
+/**
+ * How long an object stage may go unchanged before it counts as abandoned. A live ingest keeps changing its stage:
+ * the download writes the archive, extraction writes the package files, and a registry archive request has a
+ * five-minute deadline, so a stage that has not changed for twice that long has no process still writing it.
+ */
+export const STALE_OBJECT_STAGE_MILLISECONDS = 10 * 60 * 1000;
+
+const OBJECT_STAGE = /^\.([0-9a-f]{64})\.stage-([0-9A-Za-z_-]{16,128})$/u;
+
+/**
+ * The most recent change anywhere in a stage tree, in milliseconds, or null when the tree holds anything but regular
+ * files and directories (which no ingest writes, so it is left for explicit repair).
+ */
+async function newestStageChange(operations: StoreNodeOperations, root: string): Promise<number | null> {
+    const budget: DirectoryBudget = {
+        entries: LOCAL_PACKAGE_STORE_LIMITS.maxInstallEntries,
+        nameBytes: LOCAL_PACKAGE_STORE_LIMITS.maxTraversalNameBytes,
+    };
+    let newest = 0;
+    const pending = [root];
+    while (pending.length > 0) {
+        const path = pending.pop() as string;
+        const stats = await operations.lstat(path, { bigint: true });
+        if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile())) {
+            return null;
+        }
+        newest = Math.max(newest, Number(stats.mtimeMs));
+        if (stats.isDirectory()) {
+            for (const name of await readDirectoryBounded(operations, path, budget)) {
+                pending.push(join(path, name));
+            }
+        }
+    }
+    return newest;
+}
+
+/** Removes a stage tree of regular files and directories, making read-only entries writable first. */
+async function removeStageTree(operations: StoreNodeOperations, root: string): Promise<void> {
+    const pending = [root];
+    while (pending.length > 0) {
+        const path = pending.pop() as string;
+        const stats = await operations.lstat(path, { bigint: true });
+        if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile())) {
+            throw new LocalPackageStoreError('STORE_REPAIR_REQUIRED', 'An abandoned object stage is not a plain tree');
+        }
+        await operations.chmod(path, stats.isDirectory() ? 0o700 : 0o600);
+        if (stats.isDirectory()) {
+            for (const name of await readDirectoryBounded(operations, path)) {
+                pending.push(join(path, name));
+            }
+        }
+    }
+    await operations.rm(root, { recursive: true, force: true });
+}
+
+/**
+ * Removes the object stages that an interrupted ingest left behind: those unchanged for
+ * {@link STALE_OBJECT_STAGE_MILLISECONDS}. A stage only ever becomes the object by a rename after it is complete, so
+ * one left behind holds nothing the store needs. Without this, one interrupted download marks its package busy for
+ * every later install and blocks `erden store prune`. Only stages of `archiveSha256` when given; the count removed.
+ */
+async function reclaimStaleObjectStages(
+    operations: StoreNodeOperations,
+    objectsRoot: string,
+    archiveSha256?: string,
+    now: number = Date.now(),
+): Promise<number> {
+    if ((await lstatOrNull(operations, objectsRoot)) === null) {
+        return 0;
+    }
+    let reclaimed = 0;
+    for (const name of await readDirectoryBounded(operations, objectsRoot)) {
+        const stage = OBJECT_STAGE.exec(name);
+        if (stage === null || (archiveSha256 !== undefined && stage[1] !== archiveSha256)) {
+            continue;
+        }
+        const path = join(objectsRoot, name);
+        let newest: number | null;
+        try {
+            newest = await newestStageChange(operations, path);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                continue;
+            }
+            throw error;
+        }
+        if (newest === null || now - newest < STALE_OBJECT_STAGE_MILLISECONDS) {
+            continue;
+        }
+        try {
+            await removeStageTree(operations, path);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                continue;
+            }
+            throw error;
+        }
+        reclaimed += 1;
+    }
+    return reclaimed;
+}
+
 async function hasObjectTransactionResidue(
     operations: StoreNodeOperations,
     objectsRoot: string,
     archiveSha256: string,
 ): Promise<boolean> {
+    await reclaimStaleObjectStages(operations, objectsRoot, archiveSha256);
     const exactStagePrefix = `.${archiveSha256}.stage-`;
     const exactBackupPrefix = `.${archiveSha256}.backup-`;
     const foldedStagePrefix = portableNameKey(exactStagePrefix);
@@ -3181,6 +3284,7 @@ async function pruneStorePromise(
     } else if (administration.active !== null || administration.stageNames.length > 0) {
         throw new LocalPackageStoreError('STORE_PRUNE_BLOCKED', 'Another store administration transaction is active');
     }
+    await reclaimStaleObjectStages(operations, objectsRoot);
     if (input.registrationGenerations.length === 0 && input.archiveSha256s.length === 0) {
         return deepFreeze({
             status: 'hit',
