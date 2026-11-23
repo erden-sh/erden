@@ -65,6 +65,74 @@ const PUBLISH_PROGRESS_MILLISECONDS = 60_000;
 const PUBLISH_POLL_FAILURE_MILLISECONDS = 5 * 60 * 1_000;
 const PUBLISH_POLL_REQUEST_MILLISECONDS = 30_000;
 
+// erden.sh is the Erden website and its documentation. The hosted registry, with its API and its sign-in, is only at
+// registry.erden.sh, and erden.sh answers every /api/v1 path with a 404. People and agents type the website anyway.
+const WEBSITE_HOSTNAMES: ReadonlySet<string> = new Set(['erden.sh', 'www.erden.sh']);
+
+/** Whether a canonical origin is the Erden website rather than a registry. */
+export function isErdenWebsiteOrigin(origin: string): boolean {
+    try {
+        const url = new URL(origin);
+        return (
+            (url.protocol === 'https:' || url.protocol === 'http:') &&
+            url.port === '' &&
+            WEBSITE_HOSTNAMES.has(url.hostname)
+        );
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * A `--registry` value typed on the command line. The Erden website means the hosted registry, so it becomes
+ * `https://registry.erden.sh` before any request is made: a credential is only ever sent to, and stored for, the
+ * registry itself. Any other value must already be one canonical origin; `undefined` means it is not.
+ */
+export function typedRegistryOrigin(raw: string): string | undefined {
+    let origin: string;
+    try {
+        origin = normalizeRegistryOrigin(raw);
+    } catch {
+        return undefined;
+    }
+    if (isErdenWebsiteOrigin(origin)) {
+        return DEFAULT_REGISTRY_ORIGIN;
+    }
+    return origin === raw ? origin : undefined;
+}
+
+/** The message for a typed `--registry` value that is not one origin, naming the hosted registry as the example. */
+export const REGISTRY_ORIGIN_USAGE = `--registry must be one canonical HTTP(S) origin, such as ${DEFAULT_REGISTRY_ORIGIN}`;
+
+/** A project manifest whose `registry` names the Erden website. */
+export class RegistryWebsiteError extends Error {
+    readonly code = 'REGISTRY_IS_WEBSITE' as const;
+
+    constructor(readonly origin: string) {
+        super(
+            `The project manifest's registry, ${origin}, is the Erden website, not a registry. Set "registry" to "${DEFAULT_REGISTRY_ORIGIN}".`,
+        );
+        this.name = 'RegistryWebsiteError';
+    }
+}
+
+/**
+ * A registry origin read from a project manifest. Naming the website is refused with the fix rather than rewritten:
+ * the manifest is committed and published, and the registry accepts a publication only when the manifest names that
+ * registry exactly.
+ */
+export function projectRegistryOrigin<Origin extends string | undefined>(origin: Origin): Origin {
+    if (origin !== undefined && isErdenWebsiteOrigin(origin)) {
+        throw new RegistryWebsiteError(origin);
+    }
+    return origin;
+}
+
+/** The two lines a command prints for a manifest that names the website. */
+export function renderRegistryWebsiteError(error: RegistryWebsiteError): string {
+    return `Erden could not complete [${error.code}]\n${error.message}\n`;
+}
+
 export class CliRegistryUsageError extends Error {
     constructor(message: string) {
         super(message);
@@ -580,15 +648,11 @@ function parsePublicationArguments(arguments_: ReadonlyArray<string>): Publicati
         throw new CliRegistryUsageError('publication requires one canonical attempt id');
     }
     if (registry !== undefined) {
-        try {
-            const canonical = normalizeRegistryOrigin(registry);
-            if (canonical !== registry) {
-                throw new Error();
-            }
-            registry = canonical;
-        } catch {
-            throw new CliRegistryUsageError('--registry must be one canonical HTTP(S) origin');
+        const canonical = typedRegistryOrigin(registry);
+        if (canonical === undefined) {
+            throw new CliRegistryUsageError(REGISTRY_ORIGIN_USAGE);
         }
+        registry = canonical;
     }
     return Object.freeze({ attemptId, ...(registry === undefined ? {} : { registry }), wait, report, json });
 }
@@ -607,7 +671,7 @@ function selection(
 }
 
 function registryFromManifest(manifest: ReturnType<typeof loadManifest>): string {
-    const registry = manifest.manifest.registry;
+    const registry = projectRegistryOrigin(manifest.manifest.registry);
     if (registry === undefined || normalizeRegistryOrigin(registry) !== registry) {
         throw new Error('project registry unavailable');
     }
@@ -909,6 +973,10 @@ export async function runPublishCommand(
         }
         return followed.attempt.state === 'failed' ? 1 : 0;
     } catch (cause) {
+        if (cause instanceof RegistryWebsiteError) {
+            context.stderr.write(renderRegistryWebsiteError(cause));
+            return 3;
+        }
         // A local packing refusal (for example a stale erden.lock) is the author's to fix, so it keeps its own
         // message and remedy; nothing has been uploaded.
         context.stderr.write(
@@ -1019,7 +1087,11 @@ export async function runPublicationCommand(
                 : `${renderAttempt(attempt)}${report === undefined ? '' : renderReport(report)}${renderReportPage(registryOrigin, attempt)}`,
         );
         return attempt.state === 'failed' ? 1 : 0;
-    } catch {
+    } catch (cause) {
+        if (cause instanceof RegistryWebsiteError) {
+            context.stderr.write(renderRegistryWebsiteError(cause));
+            return 3;
+        }
         context.stderr.write(
             cancellation.signal.aborted
                 ? 'Erden publication wait expired [CLI_PUBLICATION_TIMEOUT]\n'

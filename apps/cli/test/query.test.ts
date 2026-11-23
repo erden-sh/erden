@@ -381,6 +381,38 @@ describe('erden query', () => {
         expect(run.queries).toEqual([]);
     });
 
+    it('reads --registry https://erden.sh, the website, as the hosted registry', async () => {
+        const run = harness({ cwd: tempRoot() });
+        await runCli(['query', `${ALIAS}@1.2.3`, '--stdin', '--registry', 'https://erden.sh'], run.runtime);
+        expect(run.calls[0]).toBe(`alias:${ALIAS}:-`);
+        expect(run.queries[0]?.registryOrigin).toBe('https://registry.erden.sh');
+    });
+
+    it('refuses a project manifest whose registry is the website, naming the registry, without a request', async () => {
+        const root = tempRoot();
+        writeFileSync(
+            join(root, 'erden.config.json'),
+            serializeManifestV1(
+                normalizeManifestV1({
+                    schemaVersion: 1,
+                    canonicalIri: 'https://example.test/project',
+                    alias: '@example/project',
+                    ownedIriPrefixes: ['https://example.test/project#'],
+                    sources: { ontology: ['ontology.ttl'] },
+                    registry: 'https://erden.sh',
+                }),
+                'json',
+            ),
+        );
+        const run = harness({ cwd: root });
+        expect(await runCli(['query', `${ALIAS}@1.2.3`, '--stdin'], run.runtime)).toBe(CLI_EXIT.operational);
+        expect(run.stderr).toEqual([
+            'Erden could not complete [REGISTRY_IS_WEBSITE]\nThe project manifest\'s registry, https://erden.sh, is the Erden website, not a registry. Set "registry" to "https://registry.erden.sh".\n',
+        ]);
+        expect(run.calls).toEqual([]);
+        expect(run.queries).toEqual([]);
+    });
+
     it('treats empty query text as a usage error', async () => {
         const run = harness({ stdin: new Uint8Array(0) });
         expect(await runCli(['query', `${ALIAS}@1.2.3`, '--stdin', '--registry', ORIGIN], run.runtime)).toBe(2);

@@ -54,7 +54,9 @@ the latest stable release's `install.sh` and `install.ps1` on GitHub; you can al
 [releases page](https://github.com/erden-sh/erden/releases) and run `sh install.sh` or
 `powershell -ExecutionPolicy Bypass -File install.ps1`. An install script carries its release's archive digests and
 refuses any other file. The tool uses the hosted registry at `https://registry.erden.sh` unless `--registry` or a
-project's manifest names another.
+project's manifest names another; `erden login` signs in to it. `https://erden.sh` is the website and documentation,
+not the registry: the tool reads `--registry https://erden.sh` as `https://registry.erden.sh`, and a manifest's
+`registry` must name `https://registry.erden.sh` itself.
 
 The scripts install for the current user, with no administrator rights:
 
