@@ -6,52 +6,82 @@ import { compareCodePoints } from './order.js';
 import { SHACL_ENGINE_DIGEST, SHACL_ENGINE_NAME, SHACL_ENGINE_VERSION } from './shacl-engine/identity.js';
 
 /**
- * Version the behavioral rules independently of lockfile/report format identities. v2 runs SHACL on erden-shacl
- * (PurRDF 3.0.1); v1 ran it on rdf-validate-shacl 0.6.5. Captures and comparison profiles recorded under v1 keep
- * verifying against the v1 document, so stored releases stay readable; every new capture uses v2.
+ * Version the behavioral rules independently of lockfile/report format identities. v3 summarizes and self-tests only
+ * the shapes that can report at their own targets: a shape with no target that another shape refers to is covered by
+ * that shape, and a targeted shape that declares no constraint has nothing to fail; a finding names the outermost
+ * shape holding its source through `sh:property`. v2 summarized and self-tested every declared shape; v2 and v3 run
+ * SHACL on erden-shacl (PurRDF 3.0.1); v1 ran it on rdf-validate-shacl 0.6.5. Captures and comparison profiles recorded
+ * under v1 or v2 keep verifying against their document, so stored releases stay readable; every new capture uses v3.
  */
-export const ONTOLOGY_VALIDATION_POLICY_ID = 'erden.ontology-validation-policy/v2' as const;
-export const ONTOLOGY_VALIDATION_POLICY_DOCUMENT = `${JSON.stringify({
-    id: ONTOLOGY_VALIDATION_POLICY_ID,
-    scope: 'ontology-validation-after-reasoning',
-    engines: {
-        turtle: { name: 'n3', version: '2.1.1' },
-        shacl: { name: SHACL_ENGINE_NAME, version: SHACL_ENGINE_VERSION, engineDigest: SHACL_ENGINE_DIGEST },
-        sparql: { name: 'oxigraph', version: '0.5.9' },
-    },
-    borrowedTerms: 'external-predicates-types-subclasses-require-owl-declaration/v1',
-    propertyDomainRange: 'owned-owl-properties-require-domain-and-range-in-validated-graph/v1',
-    ownership: 'union-of-selected-data-source-owned-prefixes/v1',
-    shacl: {
-        execution: 'all-selected-root-and-dependency-shapes',
-        options: 'engine-defaults-no-shapes-graph-iri-no-imports/v1',
-        unsupported: 'refuse-step-on-js-owl-imports-or-entailment/v1',
-        severity: 'engine-result-severity-local-name',
-        blocking: 'Violation-findings-or-unfired-declared-shape-self-test',
-        selfTest: 'core-target-or-sx-fixture-first-source-prefix-single-fragment/v2',
-        required: 'at-least-one-selected-shape-source',
-    },
-    competencyQuestions: {
-        execution: 'root-only-dependencies-dormant',
-        required: 'at-least-one-root-question',
-        placeholders: 'literal-substitution-unknown-is-blocking/v1',
-        expectation: 'row-count-comparison-ask-boolean-as-zero-or-one/v1',
-        metadata: 'ask-expect-from-required-expected-failure-needs-closes/v1',
-        blocking: 'metadata-diagnostic-or-undocumented-failure',
-    },
-    citations: {
-        selection: 'sourcePath-observations-root-filter-uses-asserted-provenance/v1',
-        paths: 'portable-contained-relative-source-paths/v1',
-        roots: 'named-root-with-default-fallback',
-        status: 'priority-ordered-file-and-git-status/v1',
-        blocking: ['ambiguous-metadata', 'unsafe-source-path', 'missing-source-path', 'commit-not-in-repo'],
-        warnings: ['changed-since', 'uncommitted-edit'],
-    },
-    conforms: 'all-executed-stages-conform-skipped-optional-stages-pass',
-})}\n`;
+export const ONTOLOGY_VALIDATION_POLICY_ID = 'erden.ontology-validation-policy/v3' as const;
+
+interface ShaclEngineIdentity {
+    readonly name: string;
+    readonly version: string;
+    readonly engineDigest: string;
+}
+
+/** The erden-shacl policy documents (v2, v3) differ only in their id, SHACL engine identity and self-test rule. */
+function erdenShaclPolicyDocument(id: string, shacl: ShaclEngineIdentity, selfTest: string): string {
+    return `${JSON.stringify({
+        id,
+        scope: 'ontology-validation-after-reasoning',
+        engines: {
+            turtle: { name: 'n3', version: '2.1.1' },
+            shacl: { name: shacl.name, version: shacl.version, engineDigest: shacl.engineDigest },
+            sparql: { name: 'oxigraph', version: '0.5.9' },
+        },
+        borrowedTerms: 'external-predicates-types-subclasses-require-owl-declaration/v1',
+        propertyDomainRange: 'owned-owl-properties-require-domain-and-range-in-validated-graph/v1',
+        ownership: 'union-of-selected-data-source-owned-prefixes/v1',
+        shacl: {
+            execution: 'all-selected-root-and-dependency-shapes',
+            options: 'engine-defaults-no-shapes-graph-iri-no-imports/v1',
+            unsupported: 'refuse-step-on-js-owl-imports-or-entailment/v1',
+            severity: 'engine-result-severity-local-name',
+            blocking: 'Violation-findings-or-unfired-declared-shape-self-test',
+            selfTest,
+            required: 'at-least-one-selected-shape-source',
+        },
+        competencyQuestions: {
+            execution: 'root-only-dependencies-dormant',
+            required: 'at-least-one-root-question',
+            placeholders: 'literal-substitution-unknown-is-blocking/v1',
+            expectation: 'row-count-comparison-ask-boolean-as-zero-or-one/v1',
+            metadata: 'ask-expect-from-required-expected-failure-needs-closes/v1',
+            blocking: 'metadata-diagnostic-or-undocumented-failure',
+        },
+        citations: {
+            selection: 'sourcePath-observations-root-filter-uses-asserted-provenance/v1',
+            paths: 'portable-contained-relative-source-paths/v1',
+            roots: 'named-root-with-default-fallback',
+            status: 'priority-ordered-file-and-git-status/v1',
+            blocking: ['ambiguous-metadata', 'unsafe-source-path', 'missing-source-path', 'commit-not-in-repo'],
+            warnings: ['changed-since', 'uncommitted-edit'],
+        },
+        conforms: 'all-executed-stages-conform-skipped-optional-stages-pass',
+    })}\n`;
+}
+
+export const ONTOLOGY_VALIDATION_POLICY_DOCUMENT = erdenShaclPolicyDocument(
+    ONTOLOGY_VALIDATION_POLICY_ID,
+    { name: SHACL_ENGINE_NAME, version: SHACL_ENGINE_VERSION, engineDigest: SHACL_ENGINE_DIGEST },
+    'reported-shapes-targeted-with-constraint-or-unreferenced-findings-to-outermost-property-holder-core-target-or-sx-fixture-first-source-prefix-single-fragment/v3',
+);
 export const ONTOLOGY_VALIDATION_POLICY_SHA256 = createHash('sha256')
     .update(ONTOLOGY_VALIDATION_POLICY_DOCUMENT)
     .digest('hex');
+
+/** The v2 policy, kept byte for byte so captures recorded under it still verify. */
+export const ONTOLOGY_VALIDATION_POLICY_V2_DOCUMENT = erdenShaclPolicyDocument(
+    'erden.ontology-validation-policy/v2',
+    {
+        name: 'erden-shacl',
+        version: '0.1.0+purrdf.3.0.1',
+        engineDigest: 'sha256:026b0ef70f4bd68cbe0fff535b8287eb804825c057f46cc116ae1f2087b427cc',
+    },
+    'core-target-or-sx-fixture-first-source-prefix-single-fragment/v2',
+);
 
 /** The v1 policy, kept byte for byte so captures recorded under it still verify. */
 export const ONTOLOGY_VALIDATION_POLICY_V1_DOCUMENT = `${JSON.stringify({
@@ -92,7 +122,10 @@ export const ONTOLOGY_VALIDATION_POLICY_V1_DOCUMENT = `${JSON.stringify({
     conforms: 'all-executed-stages-conform-skipped-optional-stages-pass',
 })}\n`;
 
-export type OntologyValidationPolicyId = 'erden.ontology-validation-policy/v1' | typeof ONTOLOGY_VALIDATION_POLICY_ID;
+export type OntologyValidationPolicyId =
+    | 'erden.ontology-validation-policy/v1'
+    | 'erden.ontology-validation-policy/v2'
+    | typeof ONTOLOGY_VALIDATION_POLICY_ID;
 
 /** Every policy a stored capture may name, by id: its document and SHA-256. */
 const KNOWN_POLICIES: ReadonlyMap<
@@ -102,6 +135,7 @@ const KNOWN_POLICIES: ReadonlyMap<
     (
         [
             ['erden.ontology-validation-policy/v1', ONTOLOGY_VALIDATION_POLICY_V1_DOCUMENT],
+            ['erden.ontology-validation-policy/v2', ONTOLOGY_VALIDATION_POLICY_V2_DOCUMENT],
             [ONTOLOGY_VALIDATION_POLICY_ID, ONTOLOGY_VALIDATION_POLICY_DOCUMENT],
         ] as const
     ).map(([id, document]) => [

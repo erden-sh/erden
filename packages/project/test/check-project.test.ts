@@ -678,6 +678,27 @@ SELECT ?s WHERE { ?s a <https://example.test/root#A> }
         });
     });
 
+    it('reports only shapes that can fire at their own targets, within the report contract', async () => {
+        const { report } = await runNodeProject({
+            ontology: `${PREFIXES} ex:A a owl:Class . ex:B a owl:Class . ex:alice a ex:A .`,
+            shape: `${PREFIXES}
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix sx: <https://erden.sh/o/erden/shapes#> .
+ex:ClassAsShape a sh:NodeShape ; sh:targetClass ex:A ; rdfs:label "selects every A and checks nothing" .
+ex:AShape a sh:NodeShape ; sh:targetClass ex:A ;
+  sx:selftestFixture """t:bad a ex:B .""" ;
+  sh:property [ a sh:PropertyShape ; sh:path rdfs:label ; sh:maxCount 1 ] ;
+  sh:not [ a sh:NodeShape ; sh:class ex:B ] .`,
+        });
+        expect(report.outcome).toBe('passed');
+        expect(report.stages.shacl.details?.shapes.map(({ shape }) => shape)).toEqual([
+            'https://example.test/root#AShape',
+        ]);
+        expect(report.stages.shacl.details?.selfTest).toEqual([
+            { shape: 'https://example.test/root#AShape', fired: true, reason: null },
+        ]);
+    });
+
     it('preserves hostile SHACL message text in JSON and terminal-escapes it in human output', async () => {
         const turtleMessage = 'danger\\u0000\\r\\u001B\\\\n';
         const expectedMessage = `danger\u0000\r\u001b\\n`;

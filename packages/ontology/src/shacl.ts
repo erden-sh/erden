@@ -333,8 +333,20 @@ function distinctOwners(sources: ReadonlyArray<ShapeSourceDescriptor>): Readonly
     );
 }
 
+/**
+ * The shape a result is reported under: the outermost shape that holds its source shape through a chain of
+ * `sh:property`, or the source shape itself, so a finding never names a property shape held inside another shape.
+ */
 function sourceShapeOwner(parsed: ParsedShapes, sourceShape: RdfTermLike): RdfTermLike {
-    return parsed.ownerByPropertyShape.get(termKey(sourceShape)) ?? sourceShape;
+    let owner = sourceShape;
+    const seen = new Set<string>([termKey(owner)]);
+    let next = parsed.ownerByPropertyShape.get(termKey(owner));
+    while (next !== undefined && !seen.has(termKey(next))) {
+        seen.add(termKey(next));
+        owner = next;
+        next = parsed.ownerByPropertyShape.get(termKey(owner));
+    }
+    return owner;
 }
 
 function descriptorsForShape(parsed: ParsedShapes, shape: RdfTermLike): ReadonlyArray<ShapeSourceDescriptor> {
@@ -370,6 +382,175 @@ function declaredShapeTerms(shapes: Store): ReadonlyArray<Term> {
     return [...declared.values()].sort((left, right) => compareCodePoints(termKey(left), termKey(right)));
 }
 
+const RDF_FIRST = namedNode(`${RDF}first`);
+const RDF_REST = namedNode(`${RDF}rest`);
+const RDF_NIL = `${RDF}nil`;
+const SH_PARAMETER = namedNode(`${SHACL}parameter`);
+const SH_PATH = namedNode(`${SHACL}path`);
+/** The SHACL Core targets (section 2.1.3) and the SHACL-SPARQL custom target. */
+const TARGET_PREDICATES = ['targetClass', 'targetNode', 'targetSubjectsOf', 'targetObjectsOf', 'target'].map((name) =>
+    namedNode(`${SHACL}${name}`),
+);
+/** Parameters whose value is one shape that the declaring shape validates value nodes against. */
+const SHAPE_REFERENCE_PREDICATES = ['property', 'node', 'not', 'qualifiedValueShape'].map((name) =>
+    namedNode(`${SHACL}${name}`),
+);
+/** Parameters whose value is a SHACL list of shapes. */
+const SHAPE_LIST_PREDICATES = ['and', 'or', 'xone'].map((name) => namedNode(`${SHACL}${name}`));
+/**
+ * Every parameter of the SHACL Core constraint components (section 4), plus `sh:sparql`, `sh:js` and `sh:expression`.
+ * A shape declares a constraint only through these or through a parameter the shapes graph itself declares with
+ * `sh:parameter` (section 2.1.1); targets, messages, severities and annotations declare none.
+ */
+const CORE_CONSTRAINT_PARAMETERS = new Set(
+    [
+        'class',
+        'datatype',
+        'nodeKind',
+        'minCount',
+        'maxCount',
+        'minExclusive',
+        'minInclusive',
+        'maxExclusive',
+        'maxInclusive',
+        'minLength',
+        'maxLength',
+        'pattern',
+        'flags',
+        'languageIn',
+        'uniqueLang',
+        'equals',
+        'disjoint',
+        'lessThan',
+        'lessThanOrEquals',
+        'not',
+        'and',
+        'or',
+        'xone',
+        'node',
+        'property',
+        'qualifiedValueShape',
+        'qualifiedMinCount',
+        'qualifiedMaxCount',
+        'qualifiedValueShapesDisjoint',
+        'closed',
+        'ignoredProperties',
+        'hasValue',
+        'in',
+        'sparql',
+        'js',
+        'expression',
+    ].map((name) => `${SHACL}${name}`),
+);
+
+function listMembers(shapes: Store, head: Term): ReadonlyArray<Term> {
+    const members: Term[] = [];
+    const seen = new Set<string>();
+    let node: Term | undefined = head;
+    while (node !== undefined && node.value !== RDF_NIL && !seen.has(termKey(node))) {
+        seen.add(termKey(node));
+        const first = shapes.getQuads(node, RDF_FIRST, null, null)[0]?.object;
+        if (first !== undefined) {
+            members.push(first);
+        }
+        node = shapes.getQuads(node, RDF_REST, null, null)[0]?.object;
+    }
+    return members;
+}
+
+/** Shapes another shape refers to, so they report through that shape and are covered by its self-test. */
+function referencedShapeKeys(shapes: Store): ReadonlySet<string> {
+    const referenced = new Set<string>();
+    for (const predicate of SHAPE_REFERENCE_PREDICATES) {
+        for (const quad of shapes.getQuads(null, predicate, null, null)) {
+            referenced.add(termKey(quad.object));
+        }
+    }
+    for (const predicate of SHAPE_LIST_PREDICATES) {
+        for (const quad of shapes.getQuads(null, predicate, null, null)) {
+            for (const member of listMembers(shapes, quad.object)) {
+                referenced.add(termKey(member));
+            }
+        }
+    }
+    return referenced;
+}
+
+function hasTarget(shapes: Store, shape: Term): boolean {
+    return TARGET_PREDICATES.some((predicate) => shapes.getQuads(shape, predicate, null, null).length > 0);
+}
+
+/**
+ * Whether a shape declares a constraint, on itself or on a property shape it holds through `sh:property`. A shape
+ * that declares none can report no validation result for any data, so a self-test of it could never fire.
+ */
+function declaresConstraint(
+    shapes: Store,
+    shape: Term,
+    declaredParameters: ReadonlySet<string>,
+    seen: Set<string> = new Set(),
+): boolean {
+    const key = termKey(shape);
+    if (seen.has(key)) {
+        return false;
+    }
+    seen.add(key);
+    for (const quad of shapes.getQuads(shape, null, null, null)) {
+        const predicate = quad.predicate.value;
+        if (quad.predicate.equals(SH_PROPERTY)) {
+            if (declaresConstraint(shapes, quad.object, declaredParameters, seen)) {
+                return true;
+            }
+            continue;
+        }
+        if (CORE_CONSTRAINT_PARAMETERS.has(predicate) || declaredParameters.has(predicate)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * The declared shapes Erden reports on: each gets a shape summary and a self-test. A shape reports results only for
+ * the focus nodes of its own targets, so the self-test proves each shape can fail at its targets. Two kinds of
+ * declared shape are left out, as untyped property shapes always were, because no fixture could make them report and
+ * their behavior is already covered or empty:
+ *
+ * - a shape with no target that another shape refers to (`sh:property`, `sh:node`, `sh:not`, `sh:qualifiedValueShape`
+ *   or a member of `sh:and`, `sh:or`, `sh:xone`): it reports through that shape, whose self-test covers it. Typing it
+ *   `sh:PropertyShape` or `sh:NodeShape` changes nothing in SHACL, so it changes nothing here either;
+ * - a shape with a target that declares no constraint, such as an OWL class punned as a node shape with only
+ *   `sh:targetClass`: it can report nothing for any data, so nothing it checks can go unchecked.
+ *
+ * A shape with no target that nothing refers to still gets a self-test, and fails it closed: it is inert.
+ */
+function reportedShapeTerms(shapes: Store): ReadonlyArray<Term> {
+    const referenced = referencedShapeKeys(shapes);
+    // Parameters of the constraint components the shapes graph declares itself (SHACL-SPARQL, section 6.2.1).
+    const declaredParameters = new Set(
+        shapes
+            .getQuads(null, SH_PARAMETER, null, null)
+            .flatMap((quad) => shapes.getQuads(quad.object, SH_PATH, null, null).map((path) => path.object.value)),
+    );
+    return declaredShapeTerms(shapes).filter((shape) => {
+        if (!hasTarget(shapes, shape)) {
+            return !referenced.has(termKey(shape));
+        }
+        return declaresConstraint(shapes, shape, declaredParameters);
+    });
+}
+
+/** A result's source shape and every shape that holds it through a chain of `sh:property`, as term keys. */
+function sourceShapeChain(parsed: ParsedShapes, sourceShape: RdfTermLike): ReadonlySet<string> {
+    const chain = new Set<string>();
+    let shape: RdfTermLike | undefined = sourceShape;
+    while (shape !== undefined && !chain.has(termKey(shape))) {
+        chain.add(termKey(shape));
+        shape = parsed.ownerByPropertyShape.get(termKey(shape));
+    }
+    return chain;
+}
+
 function fixtureSourcesForShape(parsed: ParsedShapes, shape: Term): ReadonlyArray<ParsedShapeSource> {
     const attributedIds = new Set(descriptorsForShape(parsed, shape).map((descriptor) => descriptor.id));
     if (attributedIds.size === 0) {
@@ -384,7 +565,7 @@ type SelfTestFixture =
 
 /** Each declared shape's self-test: a fixture graph to validate, or the reason it has none. */
 function selfTestFixtures(parsed: ParsedShapes): ReadonlyArray<SelfTestFixture> {
-    const shapes = declaredShapeTerms(parsed.dataset);
+    const shapes = reportedShapeTerms(parsed.dataset);
     const fixtures: SelfTestFixture[] = [];
     for (let index = 0; index < shapes.length; index += 1) {
         const shape = shapes[index];
@@ -459,8 +640,8 @@ function selfTestResults(
         }
         const report = reports.get(selfTestGraphId(index));
         const fired =
-            report?.results.some(
-                (result) => termKey(sourceShapeOwner(parsed, result.sourceShape)) === termKey(fixture.shape),
+            report?.results.some((result) =>
+                sourceShapeChain(parsed, result.sourceShape).has(termKey(fixture.shape)),
             ) ?? false;
         return {
             shape: fixture.shape.value,
@@ -719,7 +900,7 @@ function validateShaclInternal(
                     compareCodePoints(left.component ?? '', right.component ?? '') ||
                     compareCodePoints(left.sourceShape ?? '', right.sourceShape ?? ''),
             );
-        const shapeTerms = declaredShapeTerms(parsed.dataset);
+        const shapeTerms = reportedShapeTerms(parsed.dataset);
         const summaries: ShapeSummary[] = shapeTerms.map((shape) => {
             const target = targetFor(parsed.dataset, shape);
             const descriptors = descriptorsForShape(parsed, shape);
