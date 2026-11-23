@@ -36,6 +36,7 @@ import {
     type CheckReportUnsupportedShaclConstruct,
 } from '@erden/contracts';
 import {
+    bundledPartitionOf,
     CompetencyQuestionArtifactError,
     ShaclAnswerUntrustedError,
     ShaclEngineUnavailableError,
@@ -1179,7 +1180,12 @@ function unreasonedValue(
     const byConstruct = new Map<string, ProfilePartitionFinding[]>();
     for (const finding of reported) {
         const key = `${finding.group}\u0000${finding.construct}`;
-        byConstruct.set(key, [...(byConstruct.get(key) ?? []), finding]);
+        const group = byConstruct.get(key);
+        if (group === undefined) {
+            byConstruct.set(key, [finding]);
+        } else {
+            group.push(finding);
+        }
     }
     const grouped = [...byConstruct.entries()].sort(([left], [right]) => compareText(left, right));
     // Only the examples are located, so a source is read again at most once, and only when it has examples.
@@ -2322,8 +2328,11 @@ export function runCheckProjectSemanticKernel(
                 new TypeError('A consistent decision without error diagnostics was not materialized'),
             );
         }
+        // Normalization's partition, when it is the one core validation applies, so it is computed once.
+        const profilePartition = bundledPartitionOf(decision.normalization);
         const validation = yield* ontologyService
             .validateAssembled(materialized, {
+                ...(profilePartition === null ? {} : { profilePartition }),
                 shapeSources,
                 competencyQuestions,
                 shacl: { required: shapeSources.length > 0 },

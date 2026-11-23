@@ -11,7 +11,7 @@ import type {
 import { OWL, RDF, RDFS, XSD } from './model.js';
 import { compareCodePoints } from './order.js';
 import { partitionForBundledReasoner } from './reasoner/normalize.js';
-import { sourcePolicy } from './reasoner/partition.js';
+import { sourcePolicy, type ProfilePartition } from './reasoner/partition.js';
 
 function namedNode(value: string) {
     return DataFactory.namedNode(value);
@@ -107,7 +107,11 @@ export function validatePropertyDomainRange(
  * covers only properties owned by refuse-mode projects, because a mirrored upstream cannot add declarations or axioms
  * it does not publish.
  */
-export function validateCoreOntology(graph: AssembledOntology): Readonly<{
+export function validateCoreOntology(
+    graph: AssembledOntology,
+    /** `partitionForBundledReasoner(graph)`, when the caller already has it. */
+    partition?: ProfilePartition,
+): Readonly<{
     borrowedTerms: BorrowedTermValidation;
     propertyDomainRange: PropertyDomainRangeValidation;
 }> {
@@ -118,7 +122,7 @@ export function validateCoreOntology(graph: AssembledOntology): Readonly<{
             propertyDomainRange: validatePropertyDomainRange(graph.dataset, owners),
         };
     }
-    const { excludedKeys } = partitionForBundledReasoner(graph);
+    const { excludedKeys } = partition ?? partitionForBundledReasoner(graph);
     const reasoned = new Store(
         graph.dataset.getQuads(null, null, null, null).filter((quad) => !excludedKeys.has(quadKey(quad))),
     );

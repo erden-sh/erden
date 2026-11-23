@@ -971,6 +971,7 @@ function ownedStatements(
     start: Term,
     claimed: Set<string>,
     stopAtShared: boolean,
+    keyOf: (quad: Quad) => string,
 ): ReadonlyArray<Quad> {
     const owned: Quad[] = [];
     const pending: Term[] = [start];
@@ -987,7 +988,7 @@ function ownedStatements(
         }
         visited.add(termKey(node));
         for (const quad of index.outgoing(node)) {
-            const key = quadKey(quad);
+            const key = keyOf(quad);
             if (claimed.has(key)) {
                 continue;
             }
@@ -1024,6 +1025,14 @@ export function partitionAssembledOntology(
     options: ProfilePartitionOptions,
 ): ProfilePartition {
     const info = statementInfo(graph);
+    // Every quad here is a provenance entry's, whose key the entry holds: no key is built again.
+    const keys = new Map<Quad, string>();
+    for (const item of info.values()) {
+        keys.set(item.quad, item.key);
+    }
+    function keyOf(quad: Quad): string {
+        return keys.get(quad) ?? quadKey(quad);
+    }
     const quads = [...info.values()]
         .sort((left, right) => compareCodePoints(left.key, right.key))
         .map((item) => item.quad);
@@ -1041,7 +1050,7 @@ export function partitionAssembledOntology(
         if (quad.subject.termType !== 'NamedNode') {
             continue;
         }
-        const key = quadKey(quad);
+        const key = keyOf(quad);
         claimed.add(key);
         const reason = options.forced?.get(key);
         const classification =
@@ -1056,25 +1065,30 @@ export function partitionAssembledOntology(
             // An IRI or literal value owns no blank-node structure.
             acceptedKeys.add(key);
             if (classification.construct === UNDECLARED_ANNOTATION_PROPERTY) {
-                undeclared.set(quad.predicate.value, [...(undeclared.get(quad.predicate.value) ?? []), quad]);
+                const uses = undeclared.get(quad.predicate.value);
+                if (uses === undefined) {
+                    undeclared.set(quad.predicate.value, [quad]);
+                } else {
+                    uses.push(quad);
+                }
             }
             continue;
         }
         if (classification === undefined) {
             // The reasoned statement keeps its blank-node structure (a union domain) for the normalizer to validate.
-            ownedStatements(index, quad.object, claimed, false);
+            ownedStatements(index, quad.object, claimed, false, keyOf);
             continue;
         }
-        roots.push({ root: quad, classification, owned: ownedStatements(index, quad.object, claimed, true) });
+        roots.push({ root: quad, classification, owned: ownedStatements(index, quad.object, claimed, true, keyOf) });
     }
     function unclaimed(term: Term): boolean {
-        return index.outgoing(term).some((quad) => !claimed.has(quadKey(quad)));
+        return index.outgoing(term).some((quad) => !claimed.has(keyOf(quad)));
     }
     // One entry per subject, not per statement: each subject's statements are scanned at most twice, so a blank
     // node with n statements costs O(n), not O(n²).
     const anonymousSubjects = new Map<string, Term>();
     for (const quad of quads) {
-        if (!claimed.has(quadKey(quad))) {
+        if (!claimed.has(keyOf(quad))) {
             anonymousSubjects.set(termKey(quad.subject), quad.subject);
         }
     }
@@ -1092,10 +1106,10 @@ export function partitionAssembledOntology(
         }
         if (classifier.reasonedAnonymous(node)) {
             // A general class axiom or AllDisjointClasses in V2: the normalizer reads its whole tree.
-            ownedStatements(index, node, claimed, false);
+            ownedStatements(index, node, claimed, false, keyOf);
             continue;
         }
-        const owned = ownedStatements(index, node, claimed, true);
+        const owned = ownedStatements(index, node, claimed, true, keyOf);
         const typing = owned.find((quad) => quad.subject.equals(node) && quad.predicate.value === RDF_TYPE);
         const root = typing ?? owned[0];
         if (root !== undefined) {
@@ -1108,7 +1122,7 @@ export function partitionAssembledOntology(
     }
     const findings = roots
         .map(({ root, classification, owned }): ProfilePartitionFinding => {
-            const statements = [root, ...owned].map((quad) => info.get(quadKey(quad)) as StatementInfo);
+            const statements = [root, ...owned].map((quad) => info.get(keyOf(quad)) as StatementInfo);
             const explanation = explainFinding(index, root, classification.construct);
             return {
                 group: classification.group as ProfilePartitionGroup,
@@ -1127,7 +1141,7 @@ export function partitionAssembledOntology(
                 policy: statements.every((item) => item.policy === 'report')
                     ? ('report' as const)
                     : ('refuse' as const),
-                rootKey: quadKey(root),
+                rootKey: keyOf(root),
                 owlConstruct: explanation.owlConstruct,
                 description:
                     classification.reason === undefined
@@ -1158,11 +1172,11 @@ export function partitionAssembledOntology(
     const undeclaredAnnotationProperties = [...undeclared.entries()]
         .sort(([left], [right]) => compareCodePoints(left, right))
         .map(([property, uses]): ProfilePartitionUndeclaredAnnotationProperty => {
-            const statements = uses.map((quad) => info.get(quadKey(quad)) as StatementInfo);
+            const statements = uses.map((quad) => info.get(keyOf(quad)) as StatementInfo);
             return Object.freeze({
                 property,
                 statementCount: uses.length,
-                firstKey: quadKey(uses[0] as Quad),
+                firstKey: keyOf(uses[0] as Quad),
                 sourceIds: Object.freeze(
                     [...new Set(statements.flatMap((item) => item.sourceIds))].sort(compareCodePoints),
                 ),
