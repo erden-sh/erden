@@ -1070,6 +1070,34 @@ describe('CLI publication status workflow', () => {
         ]);
     });
 
+    it('explains a SHACL failure with no violation instead of printing bare zero counts', async () => {
+        const root = tempRoot();
+        const failedReport: PublicationReportSummaryV1 = {
+            ...succeededReport(),
+            outcome: 'failed',
+            validation: {
+                ...(succeededReport().validation as NonNullable<PublicationReportSummaryV1['validation']>),
+                status: 'failed',
+                stages: {
+                    ...(succeededReport().validation as NonNullable<PublicationReportSummaryV1['validation']>).stages,
+                    shacl: 'failed',
+                },
+            },
+        };
+        const captured = context(
+            root,
+            report(join(root, 'unused.erdenpkg')),
+            runtime({
+                getAttempt: () => Promise.resolve(attempt('failed')),
+                getReport: () => Promise.resolve(failedReport),
+            }),
+        );
+        expect(await runPublicationCommand(['attempt-1', '--registry', ORIGIN, '--report'], captured.context)).toBe(1);
+        expect(captured.stdout.join('')).toContain(
+            'SHACL: violation=0, warning=0, info=0\nSHACL failed with no violation: shapes did not fire on their self-test fixtures, or the shapes use SHACL the engine cannot run.',
+        );
+    });
+
     it('ends human status output with the canonical report page and keeps it out of JSON', async () => {
         const root = tempRoot();
         const id = 'attempt:uvI-plIBQUxz';

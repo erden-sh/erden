@@ -30,6 +30,31 @@ function stageLine(
     return `${name}: ${status}${stage.failureCodes.length === 0 ? '' : ` (${stage.failureCodes.map(terminalText).join(', ')})`}`;
 }
 
+/**
+ * The SHACL stage line. `shacl-conformance` covers two causes: violations, and shapes whose self-test fixtures did not
+ * fire (a shape not shown to work cannot pass). With no violation the code alone reads as an unexplained failure, so
+ * the line says which cause it was.
+ */
+function shaclStageLine(report: CheckProjectReport): string {
+    const stage = report.stages.shacl;
+    const details = stage.details;
+    if (details === null || details.unsupported !== undefined || details.conforms) {
+        return stageLine('SHACL', stage);
+    }
+    const unfired = details.selfTest.filter((item) => !item.fired).length;
+    const causes = [
+        ...(details.counts.violation === 0 && unfired === 0 ? [] : [plural(details.counts.violation, 'violation')]),
+        ...(unfired === 0
+            ? []
+            : [
+                  `${String(unfired)} of ${plural(details.selfTest.length, 'shape')} did not fire on ${unfired === 1 ? 'its' : 'their'} self-test fixture${unfired === 1 ? '' : 's'}`,
+              ]),
+    ];
+    return causes.length === 0
+        ? stageLine('SHACL', stage)
+        : `SHACL: ${stage.status} (${stage.failureCodes.map(terminalText).join(', ')}: ${causes.join('; ')})`;
+}
+
 function limitSetting(key: ReasonerLimitKey) {
     const setting = REASONER_LIMIT_SETTINGS.find((item) => item.key === key);
     if (setting === undefined) {
@@ -129,7 +154,7 @@ export function renderCheckProjectReport(report: CheckProjectReport): string {
         stageLine('Sources', report.stages.sources),
         stageLine('Reasoning', report.stages.reasoning),
         stageLine('Core ontology', report.stages.core),
-        stageLine('SHACL', report.stages.shacl),
+        shaclStageLine(report),
         stageLine('Competency questions', report.stages.competencyQuestions),
         stageLine('Citations', report.stages.citations),
     ];
@@ -161,6 +186,12 @@ export function renderCheckProjectReport(report: CheckProjectReport): string {
                 `${terminalText(where)} [shacl/${item.kind}] ${item.shape === null ? 'the shapes graph' : terminalText(item.shape)} ${terminalText(item.message)} (${terminalText(item.construct)})`,
             );
         }
+    }
+    const unfired = (report.stages.shacl.details?.selfTest ?? []).filter((item) => !item.fired).length;
+    if (unfired > 0) {
+        failures.push(
+            `[shacl/self-test] ${plural(unfired, 'shape')} did not fire on ${unfired === 1 ? 'its' : 'their'} self-test fixture${unfired === 1 ? '' : 's'}, so SHACL fails even with no violation: a shape must be shown to catch a bad node before it counts. Give each an sx:selftestFixture literal that it flags`,
+        );
     }
     for (const selfTest of report.stages.shacl.details?.selfTest ?? []) {
         if (!selfTest.fired) {
