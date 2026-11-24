@@ -623,11 +623,29 @@ test('a tag builds nothing: it publishes the archives of the mint run its pins n
         .filter(([, job]) => onTag(job))
         .map(([name]) => name)
         .sort();
-    assert.deepEqual(tagJobs, ['packages', 'publish', 'published-archives', 'verify']);
+    assert.deepEqual(tagJobs, ['npm', 'packages', 'publish', 'published-archives', 'verify']);
     // The package managers are updated only from a verified release, from the committed pins, with no build.
     assert.deepEqual(workflow.jobs.packages.needs, 'verify');
     assert.ok(workflow.jobs.packages.steps.some((step) => step.run?.includes('release/write-package-manifests.mjs')));
     assert.ok(!workflow.jobs.packages.steps.some((step) => step.run?.includes('build-cli-archive.mjs')));
+    // The npm packages too: from the verified release's own archives, which npm-packages.mjs checks against the pins.
+    const npm = workflow.jobs.npm;
+    assert.deepEqual(npm.needs, 'verify');
+    assert.equal(npm.environment, 'npm');
+    const downloadAt = npm.steps.findIndex((step) => step.run?.includes('gh release download "$GITHUB_REF_NAME"'));
+    const publishAt = npm.steps.findIndex((step) =>
+        /node release\/npm-packages\.mjs .*--pack .*--publish --provenance/su.test(step.run ?? ''),
+    );
+    assert.ok(downloadAt !== -1 && publishAt > downloadAt, 'npm publishes the downloaded release archives');
+    assert.ok(!npm.steps.some((step) => step.run?.includes('build-cli-archive.mjs')), 'npm builds no archive');
+    assert.ok(!npm.steps.some((step) => /NODE_AUTH_TOKEN|NPM_TOKEN|secrets\./u.test(JSON.stringify(step))), 'no token');
+    for (const step of npm.steps.slice(1)) {
+        assert.equal(
+            step.if,
+            "${{ vars.NPM_PUBLISH == 'true' }}",
+            `${step.name ?? step.uses} runs only with NPM_PUBLISH`,
+        );
+    }
     for (const name of ['published-archives', 'publish']) {
         const steps = workflow.jobs[name].steps;
         const download = steps.findIndex((step) => step.uses?.startsWith('actions/download-artifact@'));
@@ -694,6 +712,9 @@ test('the release workflow pins every action, and only its publish job and the j
         } else if (name === 'published-archives') {
             // It fetches the mint's archives; nothing more.
             assert.deepEqual(job.permissions, { contents: 'read', actions: 'read' }, name);
+        } else if (name === 'npm') {
+            // id-token is npm trusted publishing's OIDC token, which also signs the packages' provenance.
+            assert.deepEqual(job.permissions, { contents: 'read', 'id-token': 'write' }, name);
         } else {
             assert.equal(job.permissions, undefined, `${name} must not raise permissions`);
         }
