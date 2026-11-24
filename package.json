@@ -19,6 +19,7 @@
         "check:package-packs": "pnpm run build:runtime && node scripts/check-package-packs.mjs",
         "test:cli:packed": "node scripts/test-cli-packed-install.mjs",
         "test:cli:archive": "node scripts/test-cli-archive.mjs",
+        "test:npm:packages": "node scripts/test-npm-packages.mjs",
         "check:workspace": "pnpm run check:shacl:engine && pnpm run check:boundaries && pnpm run check:dependency-pins && pnpm run format:check && pnpm run check:package-packs && pnpm run test:cli:packed && pnpm run test:cli:archive && pnpm run lint && pnpm run typecheck && pnpm run test:guards && pnpm run test:workspace",
         "format": "oxfmt .",
         "format:check": "oxfmt --check .",
