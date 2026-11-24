@@ -46,6 +46,21 @@ scoop bucket add erden https://github.com/erden-sh/scoop-bucket
 scoop install erden                                  # Windows x64
 ```
 
+Or, for one project (in CI, for example), as a development dependency from npm, which pins the version in the
+project's lockfile:
+
+```bash
+pnpm add -D @erden-sh/cli      # or: npm install --save-dev @erden-sh/cli
+pnpm exec erden check          # or: npx erden check
+```
+
+`@erden-sh/cli` holds only a small launcher for `erden` and `den`. Erden itself is in one package per platform,
+`@erden-sh/cli-<platform>` (`linux-x64`, `linux-arm64`, `linux-x64-musl`, `linux-arm64-musl`, `darwin-arm64`,
+`win32-x64`), each holding that platform's release archive file for file, byte for byte. They are optional
+dependencies, so the package manager installs only the one for the machine; installing with `--no-optional` or
+`--omit=optional` leaves Erden out. None of them runs an install script, and the release workflow publishes them with
+npm provenance (`npm audit signatures` checks it).
+
 Each release has one archive per platform: Linux x64 and arm64 for glibc and for musl (Alpine), macOS arm64 and
 Windows x64, with the Linux and macOS ones as both `.tar.xz` and `.tar.gz`. An archive holds the `erden` CLI as one
 executable (Node.js with the CLI built in), the `den` command beside it, and both engines. Each release also has
@@ -95,7 +110,7 @@ archive against that release's `SHA256SUMS`, fetched over HTTPS from the same re
 
 `erden upgrade` updates an install made this way to the latest release: it checks the new release's install script and
 archive against its `SHA256SUMS` and then runs that script. An install made by Homebrew or Scoop is updated by them
-instead. Canary releases (`v<x.y.z>-rc.<n>`, GitHub prereleases) are for trying what comes next: install one with
+instead, and one from npm like any other dependency (`pnpm update @erden-sh/cli`). Canary releases (`v<x.y.z>-rc.<n>`, GitHub prereleases) are for trying what comes next: install one with
 `curl -fsSL https://erden.sh/install/canary | sh` (Windows: `irm https://erden.sh/install/canary.ps1 | iex`), or move
 an install to that channel with `erden upgrade --channel canary`, and back with `erden upgrade --channel stable`.
 
@@ -124,7 +139,8 @@ curl -fsSL https://erden.sh/install | sh -s -- --uninstall
 This removes the installed versions, the `erden` and `den` links or launchers, and the `PATH` lines or entry the
 script added. Your projects, Erden's package store (`~/.local/share/erden/store`, or `%LOCALAPPDATA%\Erden\store`)
 and saved registry sign-ins (`erden logout` removes them) are left as they were. Installed with Homebrew or Scoop,
-run `brew uninstall erden` or `scoop uninstall erden` instead.
+run `brew uninstall erden` or `scoop uninstall erden` instead, and from npm, `pnpm remove @erden-sh/cli` (or
+`npm uninstall @erden-sh/cli`).
 
 ### Checking where a release came from
 
@@ -135,7 +151,8 @@ built it. With the [GitHub CLI](https://cli.github.com):
 gh attestation verify erden-<version>-<platform>.tar.gz --repo erden-sh/erden
 ```
 
-Erden 0.1.0 has no attestations; check its assets against `SHA256SUMS`.
+Erden 0.1.0 has no attestations; check its assets against `SHA256SUMS`. The npm packages carry npm provenance from
+the release workflow, which `npm audit signatures` checks in a project that installed them.
 
 ### Telemetry
 
@@ -206,7 +223,20 @@ CLI install, and every test.
    published release installs and runs on every platform, the workflow writes the Homebrew formula and the Scoop
    manifest from the pins (`release/write-package-manifests.mjs`) and pushes them to
    [erden-sh/homebrew-tap](https://github.com/erden-sh/homebrew-tap) and
-   [erden-sh/scoop-bucket](https://github.com/erden-sh/scoop-bucket).
+   [erden-sh/scoop-bucket](https://github.com/erden-sh/scoop-bucket). It also builds the npm packages from the
+   release's own archives, each checked against its pin (`release/npm-packages.mjs`), packs them, checks every packed
+   file against the archive, and publishes them, the platform packages first, with npm trusted publishing: npm
+   accepts the job's OIDC identity (this repository, `release.yml`, the `npm` environment) instead of a stored token,
+   and signs a provenance statement for each package.
+
+npm sets up a trusted publisher only for a package that already exists, so the npm packages start with a one-time
+setup by an owner of the `erden-sh` npm organization: `node scripts/npm-bootstrap.mjs` publishes an existing
+release's packages with their own sign-in (`--dry-run` first; these versions have no provenance statement, which
+only a CI run can sign), and `node scripts/npm-bootstrap.mjs --trust` makes
+`release.yml` the trusted publisher of every package, after which the repository variable `NPM_PUBLISH` is set to
+`true`. Until then the release skips npm with a warning. npm drops a trusted publisher that has not published within
+two days, so `--trust` runs just before a release. `pnpm run test:npm:packages` builds the packages of the current
+version from its release, installs them into a scratch project and runs them, without the registry.
 
 A canary is made the same way with the version `x.y.z-rc.n` and the tag `vx.y.z-rc.n`, which
 `.github/workflows/release-canary.yml` publishes as a GitHub prerelease that is never marked latest.

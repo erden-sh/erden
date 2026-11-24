@@ -24,7 +24,9 @@ name: release
 #   repository (named erden-sh/erden and not private). Once the published release verifies on every platform, the
 #   packages job writes the Homebrew formula and the Scoop manifest from the pins and pushes them to
 #   erden-sh/homebrew-tap and erden-sh/scoop-bucket, each with its own deploy key (secrets HOMEBREW_TAP_DEPLOY_KEY and
-#   SCOOP_BUCKET_DEPLOY_KEY); without a key, that repository is skipped with a warning.
+#   SCOOP_BUCKET_DEPLOY_KEY); without a key, that repository is skipped with a warning. The npm job publishes the npm
+#   packages (@erden-sh/cli and one package per platform) from the release's archives through npm trusted publishing,
+#   once the repository variable NPM_PUBLISH is true; without it, it is skipped with a warning.
 #
 # GitHub keeps a run's artifacts for 90 days (this repository's maximum): an archive mint must follow its engine mint,
 # and a tag its archive mint, within that time, or the mint is run again. Jobs that fetch another run's artifacts get
@@ -369,6 +371,60 @@ jobs:
         uses: ./.github/workflows/verify-release.yml
         with:
             tag: ${{ github.ref_name }}
+
+    # The npm packages of the verified release (release/npm-packages.mjs): @erden-sh/cli-<platform> for each of the six
+    # archives, holding its files byte for byte, and @erden-sh/cli, the launcher that names them as optional
+    # dependencies, built from the release's own archives after each is checked against its pin, packed, checked again,
+    # and published platform packages first, with provenance. npm trusted publishing (OIDC) authenticates the job: each
+    # package's trusted publisher on npmjs.com names this repository, this workflow file (release.yml) and the `npm`
+    # environment, and no npm token is stored. Until the repository variable NPM_PUBLISH is true (set once the packages
+    # exist and trust this workflow; scripts/npm-bootstrap.mjs), the job publishes nothing and warns.
+    npm:
+        name: npm packages
+        needs: verify
+        # This is a versioned runner label; GitHub-managed runner contents are not content-addressed.
+        runs-on: ubuntu-24.04
+        environment: npm
+        permissions:
+            contents: read
+            # The OIDC token npm exchanges for a publish token, which also signs the provenance statements.
+            id-token: write
+        steps:
+            - name: Skip without NPM_PUBLISH
+              if: ${{ vars.NPM_PUBLISH != 'true' }}
+              run: echo "::warning::The repository variable NPM_PUBLISH is not true; the npm packages of ${GITHUB_REF_NAME#v} are not published"
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+              if: ${{ vars.NPM_PUBLISH == 'true' }}
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+              if: ${{ vars.NPM_PUBLISH == 'true' }}
+              with:
+                  node-version-file: .node-version
+            # Trusted publishing needs npm 11.5.1 or later; the pinned Node.js ships its own npm, used as it is.
+            - name: Check npm
+              if: ${{ vars.NPM_PUBLISH == 'true' }}
+              shell: bash
+              run: |
+                  version=$(npm --version)
+                  if [ "$(printf '%s\n' 11.5.1 "$version" | sort -V | head -n 1)" != 11.5.1 ]; then
+                      echo "npm $version cannot publish with trusted publishing (11.5.1 or later)"
+                      exit 1
+                  fi
+            - name: Download the published release's archives
+              if: ${{ vars.NPM_PUBLISH == 'true' }}
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/assets" \
+                      --pattern 'erden-*.tar.gz' --pattern 'erden-*.zip' --pattern SHA256SUMS
+                  (cd "$RUNNER_TEMP/assets" && sha256sum --check --ignore-missing SHA256SUMS)
+            - name: Build, pack, check and publish the packages
+              if: ${{ vars.NPM_PUBLISH == 'true' }}
+              run: >-
+                  node release/npm-packages.mjs --assets "$RUNNER_TEMP/assets" --version "${GITHUB_REF_NAME#v}"
+                  --out "$RUNNER_TEMP/npm" --pack "$RUNNER_TEMP/npm-tarballs" --publish --provenance
 
     # The Homebrew formula and the Scoop manifest of the verified release, written from the committed pins (so they name
     # exactly the published bytes) and pushed to their repositories with a deploy key each. A release without a key for
