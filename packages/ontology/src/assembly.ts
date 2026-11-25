@@ -125,13 +125,17 @@ export type UnparsableSourceError =
 
 function unparsedSource(descriptor: TurtleSourceDescriptor, cause: UnparsableSourceError): UnparsedOntologySource {
     const location = 'location' in cause ? cause.location : undefined;
+    const line = typeof location?.line === 'number' ? location.line : null;
+    const column = typeof location?.column === 'number' ? location.column : null;
+    // The parser's message starts with the file and position, which the fields already hold.
+    const prefix = `${descriptor.locator}${line === null ? '' : `:${String(line)}`}${column === null ? '' : `:${String(column)}`} `;
     return Object.freeze({
         sourceId: descriptor.id,
         locator: descriptor.locator,
-        line: typeof location?.line === 'number' ? location.line : null,
-        column: typeof location?.column === 'number' ? location.column : null,
+        line,
+        column,
         code: cause.code,
-        message: cause.message,
+        message: cause.message.startsWith(prefix) ? cause.message.slice(prefix.length) : cause.message,
     });
 }
 
@@ -186,8 +190,10 @@ function assembleOntologyWith(
         const byQuad = new Map<string, MutableQuadProvenance>();
         let sourceBytes = 0;
         let statements = 0;
-        for (let sourceIndex = 0; sourceIndex < descriptors.length; sourceIndex += 1) {
-            const descriptor = descriptors[sourceIndex];
+        for (let descriptorIndex = 0; descriptorIndex < descriptors.length; descriptorIndex += 1) {
+            const descriptor = descriptors[descriptorIndex];
+            // The index among assembled sources: a source a tolerant assembly leaves out takes none.
+            const sourceIndex = loaded.length;
             if (descriptor === undefined) {
                 continue;
             }

@@ -192,7 +192,7 @@ describe('QueryProject', () => {
     it('answers from the sources that parse and names each one that does not', async () => {
         const root = writeProject(
             { 'ontology.ttl': ONTOLOGY, 'broken.ttl': `${PREFIXES}ex:cat a .\n` },
-            { sources: ['ontology.ttl', 'broken.ttl', 'missing.ttl'] },
+            { sources: ['broken.ttl', 'ontology.ttl', 'missing.ttl'] },
         );
         const prepared = await prepare(root);
         expect(prepared.regime).toBe('entailed');
@@ -201,7 +201,12 @@ describe('QueryProject', () => {
                 code: 'sources-unparsed',
                 sources: [
                     expect.objectContaining({ file: 'missing.ttl', line: null }),
-                    expect.objectContaining({ file: 'broken.ttl', line: 4, code: 'TURTLE_SOURCE_PARSE_ERROR' }),
+                    expect.objectContaining({
+                        file: 'broken.ttl',
+                        line: 4,
+                        code: 'TURTLE_SOURCE_PARSE_ERROR',
+                        message: expect.not.stringContaining('broken.ttl') as string,
+                    }),
                 ],
             },
         ]);
