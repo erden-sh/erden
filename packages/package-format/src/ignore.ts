@@ -73,7 +73,7 @@ function globToRegexSource(glob: string): string {
     return source;
 }
 
-function parseIgnoreRules(bytes: Uint8Array): ReadonlyArray<IgnoreRule> {
+function decodeIgnoreText(bytes: Uint8Array): string {
     let text: string;
     try {
         text = decoder.decode(copyBytes(bytes));
@@ -86,6 +86,11 @@ function parseIgnoreRules(bytes: Uint8Array): ReadonlyArray<IgnoreRule> {
     if (text.startsWith('\uFEFF')) {
         throw new PackageFixtureError('invalid-utf8', 'Ignore file must not contain a UTF-8 BOM');
     }
+    return text;
+}
+
+function parseIgnoreRules(bytes: Uint8Array): ReadonlyArray<IgnoreRule> {
+    const text = decodeIgnoreText(bytes);
     const rules: IgnoreRule[] = [];
     for (const rawLine of text.replaceAll('\r\n', '\n').split('\n')) {
         const withoutTrailingSpaces = rawLine.replace(/(?<!\\) +$/u, '');
@@ -199,6 +204,157 @@ export function makePackageIgnorePolicy(input: PackageIgnorePolicyInput): Packag
                 }
             }
             return directlyIgnored(candidate, rules);
+        },
+    });
+}
+
+/**
+ * One `.gitignore` file's rules, matched against paths relative to the folder that holds it. `match` answers `true`
+ * when the last matching rule ignores the path, `false` when the last matching rule re-includes it with `!`, and
+ * `undefined` when no rule matches, so callers can layer files from the repository root down as git does.
+ */
+export interface GitIgnoreRules {
+    readonly isEmpty: boolean;
+    readonly match: (path: string, isDirectory: boolean) => boolean | undefined;
+}
+
+interface GitIgnoreRule {
+    readonly negative: boolean;
+    readonly directoryOnly: boolean;
+    readonly regex: RegExp;
+}
+
+function escapeClassCharacter(character: string): string {
+    return /[\\\]^[-]/u.test(character) ? `\\${character}` : character;
+}
+
+/** A bracket expression starting at `start`, or `undefined` when it is not closed and so means a literal `[`. */
+function gitBracketSource(glob: string, start: number): Readonly<{ source: string; end: number }> | undefined {
+    let index = start + 1;
+    let negated = false;
+    if (glob[index] === '!' || glob[index] === '^') {
+        negated = true;
+        index += 1;
+    }
+    let body = '';
+    let first = true;
+    while (index < glob.length) {
+        let character = glob[index];
+        if (character === ']' && !first) {
+            const source = negated ? `[^/${body}]` : `(?!/)[${body}]`;
+            return body.length === 0 ? undefined : Object.freeze({ source, end: index });
+        }
+        first = false;
+        if (character === '\\') {
+            index += 1;
+            character = glob[index];
+            if (character === undefined) {
+                return undefined;
+            }
+        }
+        if (character === '-' && body.length > 0 && glob[index + 1] !== undefined && glob[index + 1] !== ']') {
+            body += '-';
+        } else if (character !== undefined) {
+            body += escapeClassCharacter(character);
+        }
+        index += 1;
+    }
+    return undefined;
+}
+
+/** Git's wildmatch with path semantics: `*`, `?` and brackets stay inside one segment; `**` spans whole segments. */
+function gitGlobToRegexSource(glob: string): string | undefined {
+    let source = '';
+    for (let index = 0; index < glob.length; index += 1) {
+        const character = glob[index];
+        if (character === '\\') {
+            const escaped = glob[index + 1];
+            if (escaped === undefined) {
+                // Git treats a pattern ending in a lone backslash as invalid; it never matches.
+                return undefined;
+            }
+            source += escapeRegexCharacter(escaped);
+            index += 1;
+        } else if (character === '*') {
+            let end = index;
+            while (glob[end] === '*') {
+                end += 1;
+            }
+            const wholeSegment =
+                end - index >= 2 &&
+                (index === 0 || glob[index - 1] === '/') &&
+                (end === glob.length || glob[end] === '/');
+            if (wholeSegment && end === glob.length) {
+                source += '.*';
+            } else if (wholeSegment) {
+                source += '(?:.*/)?';
+                end += 1;
+            } else {
+                source += '[^/]*';
+            }
+            index = end - 1;
+        } else if (character === '?') {
+            source += '[^/]';
+        } else if (character === '[') {
+            const bracket = gitBracketSource(glob, index);
+            if (bracket === undefined) {
+                source += '\\[';
+            } else {
+                source += bracket.source;
+                index = bracket.end;
+            }
+        } else if (character !== undefined) {
+            source += escapeRegexCharacter(character);
+        }
+    }
+    return source;
+}
+
+/**
+ * Parses one `.gitignore` file with git's semantics: comments, `!` negation, backslash escapes, a leading or middle
+ * `/` anchoring the pattern to the file's folder, a trailing `/` matching folders only, `*`, `?`, bracket expressions
+ * and `**`. It reads the same strict UTF-8 as the package ignore policy.
+ */
+export function makeGitIgnoreRules(bytes: Uint8Array): GitIgnoreRules {
+    const text = decodeIgnoreText(bytes);
+    const rules: GitIgnoreRule[] = [];
+    for (const rawLine of text.replaceAll('\r\n', '\n').split('\n')) {
+        const line = rawLine.replace(/(?<!\\) +$/u, '');
+        if (line.length === 0 || line.startsWith('#')) {
+            continue;
+        }
+        const negative = line.startsWith('!');
+        let pattern = negative ? line.slice(1) : line;
+        const directoryOnly = pattern.endsWith('/') && !pattern.endsWith('\\/');
+        if (directoryOnly) {
+            pattern = pattern.replace(/\/+$/u, '');
+        }
+        const rooted = pattern.startsWith('/');
+        if (rooted) {
+            pattern = pattern.replace(/^\/+/u, '');
+        }
+        if (pattern.length === 0) {
+            continue;
+        }
+        const body = gitGlobToRegexSource(pattern.normalize('NFC'));
+        if (body === undefined) {
+            continue;
+        }
+        const prefix = rooted || pattern.includes('/') ? '^' : '(?:^|/)';
+        rules.push(Object.freeze({ negative, directoryOnly, regex: new RegExp(`${prefix}${body}$`, 'u') }));
+    }
+    const frozen = Object.freeze(rules);
+    return Object.freeze({
+        isEmpty: frozen.length === 0,
+        match: (path: string, isDirectory: boolean): boolean | undefined => {
+            const candidate = canonicalCandidate(path);
+            let result: boolean | undefined;
+            for (const rule of frozen) {
+                if ((!rule.directoryOnly || isDirectory) && rule.regex.test(candidate)) {
+                    result = !rule.negative;
+                }
+            }
+            return result;
         },
     });
 }

@@ -6,6 +6,8 @@ The codec does not resolve dependencies, write a lockfile, manage a content-addr
 
 The exported ignore evaluator is also the executable fixture oracle's evaluator. `.erdenignore` takes precedence over `.gitignore`, while `.git/**`, `.erden/**`, both ignore-control files, and the generated package manifest are always excluded. Callers provide snapshotted UTF-8 control bytes and remain responsible for safely traversing or rejecting physical filesystem entries.
 
+The filesystem packer (`PackProject`, behind `erden pack` and `erden publish`) applies `.erdenignore` with this evaluator and, in addition, every `.gitignore` from the enclosing git repository root down to the project and its subfolders, matched one file at a time by `makeGitIgnoreRules` with git's semantics. The repository root is the nearest folder, the project root included, that holds a `.git` folder or file; outside a repository only the project's own `.gitignore` files apply. `.git/info/exclude` and global excludes are not read. A `.gitignore` rule never drops the root manifest, `erden.lock`, root license and notice files, or the files the manifest's source selectors read; pack ships them and lists them in its report. No `.gitignore` is shipped. The fixture oracle keeps the single-file rule above.
+
 ## Archive and manifest
 
 - Every entry is rooted below `package/`; the generated manifest is `package/.erden/package-manifest.json`.

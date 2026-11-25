@@ -41,6 +41,7 @@ import {
     DEFAULT_REGISTRY_ORIGIN,
     loadManifest,
     PackProjectError,
+    renderPackIgnoreNotes,
     renderPackProjectError,
     toolchainGuidance,
     type DependencyArchiveReaderShape,
@@ -919,6 +920,11 @@ export async function runPublishCommand(
             report.version !== options.version
         ) {
             throw new Error('project changed during publication');
+        }
+        const ignoreNotes = options.json ? '' : renderPackIgnoreNotes(report);
+        if (ignoreNotes.length > 0) {
+            // Before upload, so the publisher sees which files .gitignore and .erdenignore rules kept out or let in.
+            context.stderr.write(ignoreNotes);
         }
         const create = options.create ? (visibility as 'private' | 'public') : false;
         const openArchive = await runtime.archiveSource(report);

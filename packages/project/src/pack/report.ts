@@ -3,7 +3,7 @@ import { isAbsolute } from 'node:path';
 import { Result, Schema } from 'effect';
 import { valid } from 'semver';
 
-import { LOCKFILE_LIMITS, isCanonicalOntologyIri, isScopedAlias } from '@erden/contracts';
+import { LOCKFILE_LIMITS, compareCodePoints, isCanonicalOntologyIri, isScopedAlias } from '@erden/contracts';
 import { PACKAGE_CODEC_LIMITS } from '@erden/package-format';
 
 export const PACK_REPORT_VERSION = 'erden.pack-report/v1' as const;
@@ -14,6 +14,12 @@ const ExactVersion = Schema.String.check(
     ),
 );
 const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+
+/** How many paths a report lists for each ignore note; `count` still tells the full number. */
+export const PACK_REPORT_PATH_LIST_LIMIT = 20;
+/** The most paths a note can count: every entry the bounded project scan may observe. */
+const PATH_NOTE_MAXIMUM_COUNT = PACKAGE_CODEC_LIMITS.maxEntries + 32;
+const PathNote = Schema.Struct({ count: Count, paths: Schema.Array(Schema.String) });
 
 export const PackProjectReportSchema = Schema.Struct({
     schema: Schema.Literal(PACK_REPORT_VERSION),
@@ -31,6 +37,13 @@ export const PackProjectReportSchema = Schema.Struct({
         fileCount: Count,
         directDependencyCount: Count,
     }),
+    /**
+     * Data files (RDF, SPARQL, CSV, TSV and JSON) present in the project that a .erdenignore or .gitignore rule left
+     * out of the package. Absent when there are none, so older readers see the same report as before.
+     */
+    ignoredDataFiles: Schema.optionalKey(PathNote),
+    /** Files a .gitignore rule matched that the package ships anyway, because the manifest or package needs them. */
+    gitIgnoredIncluded: Schema.optionalKey(PathNote),
     outcome: Schema.Literal('packed'),
 });
 export type PackProjectReport = typeof PackProjectReportSchema.Type;
@@ -54,15 +67,18 @@ function assertPlainInput(input: unknown): void {
             continue;
         }
         nodes += 1;
+        const array = Array.isArray(value);
         if (
             nodes > 32 ||
-            Array.isArray(value) ||
-            Object.getPrototypeOf(value) !== Object.prototype ||
+            Object.getPrototypeOf(value) !== (array ? Array.prototype : Object.prototype) ||
             Object.getOwnPropertySymbols(value).length !== 0
         ) {
             throw new TypeError('closed report shape');
         }
         for (const name of Object.getOwnPropertyNames(value)) {
+            if (array && name === 'length') {
+                continue;
+            }
             const descriptor = Object.getOwnPropertyDescriptor(value, name);
             if (descriptor === undefined || !('value' in descriptor) || !descriptor.enumerable) {
                 throw new TypeError('closed report descriptor');
@@ -111,6 +127,26 @@ export function decodePackProjectReport(input: unknown): PackProjectReport {
     ) {
         throw new TypeError('The pack report violates a closed v1 invariant');
     }
+    for (const note of [report.ignoredDataFiles, report.gitIgnoredIncluded]) {
+        if (note === undefined) {
+            continue;
+        }
+        if (
+            !Number.isSafeInteger(note.count) ||
+            note.count < 1 ||
+            note.count > PATH_NOTE_MAXIMUM_COUNT ||
+            note.paths.length !== Math.min(note.count, PACK_REPORT_PATH_LIST_LIMIT) ||
+            note.paths.some(
+                (path, index) =>
+                    path.length === 0 ||
+                    path.includes('\0') ||
+                    isAbsolute(path) ||
+                    (index > 0 && compareCodePoints(note.paths[index - 1] as string, path) >= 0),
+            )
+        ) {
+            throw new TypeError('The pack report ignore note is invalid');
+        }
+    }
     return freeze(report);
 }
 
@@ -124,6 +160,17 @@ export function encodePackProjectReport(input: PackProjectReport): string {
             manifestSha256: report.archive.manifestSha256,
             sha256: report.archive.sha256,
         },
+        ...(report.gitIgnoredIncluded === undefined
+            ? {}
+            : {
+                  gitIgnoredIncluded: {
+                      count: report.gitIgnoredIncluded.count,
+                      paths: report.gitIgnoredIncluded.paths,
+                  },
+              }),
+        ...(report.ignoredDataFiles === undefined
+            ? {}
+            : { ignoredDataFiles: { count: report.ignoredDataFiles.count, paths: report.ignoredDataFiles.paths } }),
         outcome: report.outcome,
         output: { cleanup: report.output.cleanup, path: report.output.path, status: report.output.status },
         project: { alias: report.project.alias, canonicalIri: report.project.canonicalIri },

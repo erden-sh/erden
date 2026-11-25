@@ -25,9 +25,14 @@ import {
     normalizePublicationManifestV1,
     type LoadedManifestV1,
 } from '@erden/contracts';
-import { ONTOLOGY_DIRECTORY_EXTENSION, ONTOLOGY_SOURCE_EXTENSIONS } from '@erden/ontology';
+import {
+    ONTOLOGY_DIRECTORY_EXTENSION,
+    ONTOLOGY_SOURCE_EXTENSIONS,
+    REFUSED_ONTOLOGY_SOURCE_EXTENSIONS,
+} from '@erden/ontology';
 import {
     assertNoPortablePathConflicts,
+    makeGitIgnoreRules,
     makePackageIgnorePolicy,
     normalizePackagePath,
     PACKAGE_CODEC_LIMITS,
@@ -35,6 +40,7 @@ import {
     portablePathCollisionKey,
     validatePackageArchive,
     type EncodedPackage,
+    type GitIgnoreRules,
     type PackageEncodeInput,
     type PackageLogicalFile,
     type PackageManifestV1,
@@ -50,7 +56,12 @@ import {
 
 import { PackProjectError, isPackProjectError } from './errors.js';
 import { makeNodePackFileSystemPort, type PackFileSystemPort, type PackNodeOperations } from './filesystem.js';
-import { decodePackProjectReport, PACK_REPORT_VERSION, type PackProjectReport } from './report.js';
+import {
+    decodePackProjectReport,
+    PACK_REPORT_PATH_LIST_LIMIT,
+    PACK_REPORT_VERSION,
+    type PackProjectReport,
+} from './report.js';
 
 export interface PackProjectOptions {
     readonly version: string;
@@ -97,11 +108,31 @@ interface CapturedControls {
     readonly erdenIgnore?: CapturedControl;
     readonly gitIgnore?: CapturedControl;
 }
+/** A `.gitignore` the pack honored, named by its absolute path (it may sit above the project root). */
+interface CapturedGitIgnore {
+    readonly path: string;
+    readonly control: CapturedControl;
+}
 interface TreeSnapshot {
     readonly files: ReadonlyArray<CapturedFile>;
     readonly directories: ReadonlyArray<CapturedDirectory>;
     readonly ignore: '.erdenignore' | '.gitignore' | null;
     readonly controls: CapturedControls;
+    readonly gitIgnores: ReadonlyArray<CapturedGitIgnore>;
+    /** Data files present in the project that an ignore rule left out of the package. */
+    readonly ignoredDataFiles: ReadonlyArray<string>;
+    /** Files a `.gitignore` rule matched but the package ships anyway, because the manifest or package needs them. */
+    readonly gitIgnoredIncluded: ReadonlyArray<string>;
+}
+
+/**
+ * The files a package always needs: the root manifest, erden.lock, root license and notice files, and the files the
+ * manifest's source selectors read. A `.gitignore` rule never drops these (`.erdenignore` still can, and pack then
+ * refuses); everything else a `.gitignore` matches stays out of the package.
+ */
+interface RequiredSelection {
+    readonly files: ReadonlySet<string>;
+    readonly directories: ReadonlyArray<Readonly<{ path: string; extension: string }>>;
 }
 
 function projectStateFailure(cause: unknown): PackProjectError {
@@ -580,12 +611,190 @@ async function assertSibling(
     }
 }
 
-async function captureTree(operations: PackNodeOperations, root: string, signal: AbortSignal): Promise<TreeSnapshot> {
+/** Extensions of the RDF and data files pack names when an ignore rule leaves them out. */
+const DATA_FILE_EXTENSIONS: ReadonlyArray<string> = Object.freeze([
+    ...new Set<string>([
+        ...ONTOLOGY_SOURCE_EXTENSIONS,
+        ...REFUSED_ONTOLOGY_SOURCE_EXTENSIONS,
+        '.rq',
+        '.csv',
+        '.tsv',
+        '.json',
+    ]),
+]);
+const LICENSE_FILE = /^(?:licen[cs]e|copying|notice)(?:[.-][^/]*)?$/iu;
+
+function isDataFile(path: string): boolean {
+    const lower = path.toLowerCase();
+    return DATA_FILE_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
+function requiredSelection(project: LoadedManifestV1): RequiredSelection {
+    const files = new Set<string>([basename(project.filePath), 'erden.lock']);
+    const directories: Array<Readonly<{ path: string; extension: string }>> = [];
+    for (const [selectors, extension] of [
+        [project.manifest.sources.ontology, ONTOLOGY_DIRECTORY_EXTENSION],
+        [project.manifest.sources.shapes, '.ttl'],
+        [project.manifest.sources.competencyQuestions, '.rq'],
+    ] as const) {
+        for (const selector of selectors) {
+            let normalized: string;
+            try {
+                normalized = normalizePackagePath(selector);
+            } catch {
+                // A selector outside the package fails later, as a non-portable manifest.
+                continue;
+            }
+            files.add(normalized);
+            directories.push(Object.freeze({ path: normalized, extension }));
+        }
+    }
+    return Object.freeze({ files, directories: Object.freeze(directories) });
+}
+
+function isRequiredFile(required: RequiredSelection, path: string): boolean {
+    return (
+        required.files.has(path) ||
+        (!path.includes('/') && LICENSE_FILE.test(path)) ||
+        required.directories.some(
+            (directory) => path.startsWith(`${directory.path}/`) && path.endsWith(directory.extension),
+        )
+    );
+}
+
+function mayHoldRequired(required: RequiredSelection, path: string): boolean {
+    const prefix = `${path}/`;
+    return (
+        [...required.files].some((file) => file.startsWith(prefix)) ||
+        required.directories.some(
+            (directory) =>
+                directory.path === path || directory.path.startsWith(prefix) || path.startsWith(`${directory.path}/`),
+        )
+    );
+}
+
+/**
+ * One honored `.gitignore`: `base` is the project folder holding it (empty for the project root), and `outside` is
+ * the project root's path relative to a `.gitignore` above the project, so its patterns match as git would.
+ */
+interface GitIgnoreFrame {
+    readonly rules: GitIgnoreRules;
+    readonly base: string;
+    readonly outside: string;
+}
+
+function gitIgnored(frames: ReadonlyArray<GitIgnoreFrame>, path: string, isDirectory: boolean): boolean {
+    let ignored = false;
+    for (const frame of frames) {
+        const candidate =
+            frame.outside.length > 0
+                ? `${frame.outside}/${path}`
+                : frame.base.length === 0
+                  ? path
+                  : path.slice(frame.base.length + 1);
+        const matched = frame.rules.match(candidate, isDirectory);
+        if (matched !== undefined) {
+            ignored = matched;
+        }
+    }
+    return ignored;
+}
+
+async function entryExists(operations: PackNodeOperations, path: string): Promise<boolean | undefined> {
+    try {
+        await operations.lstat(path, { bigint: true });
+        return true;
+    } catch (cause) {
+        const code = errorCode(cause);
+        return code === 'ENOENT' || code === 'ENOTDIR' ? false : undefined;
+    }
+}
+
+async function readGitIgnore(
+    operations: PackNodeOperations,
+    path: string,
+    signal: AbortSignal,
+    requireSingleLink: boolean,
+): Promise<CapturedControl | undefined> {
+    let stats: BigIntStats;
+    try {
+        stats = await operations.lstat(path, { bigint: true });
+    } catch (cause) {
+        if (errorCode(cause) === 'ENOENT' || errorCode(cause) === 'ENOTDIR') {
+            return undefined;
+        }
+        throw cause;
+    }
+    if (!stats.isFile() || stats.isSymbolicLink()) {
+        throw new PackProjectError('PACK_PROJECT_SOURCE_INVALID', 'A .gitignore file is not a regular file');
+    }
+    return await readFile(operations, path, PACKAGE_CODEC_LIMITS.maxEntryBytes, signal, requireSingleLink);
+}
+
+/**
+ * The `.gitignore` files above the project, from the enclosing git repository root down to the project's parent. The
+ * repository root is the nearest folder, the project root included, holding a `.git` entry (a folder, or a file for
+ * worktrees and submodules). Outside any repository there are none, and only the project's own `.gitignore` files
+ * apply. `.git/info/exclude` and global excludes are not read.
+ */
+async function ancestorGitIgnores(
+    operations: PackNodeOperations,
+    root: string,
+    signal: AbortSignal,
+): Promise<ReadonlyArray<Readonly<{ path: string; outside: string; control: CapturedControl }>>> {
+    const above: string[] = [];
+    let directory = root;
+    for (;;) {
+        signal.throwIfAborted();
+        const found = await entryExists(operations, join(directory, '.git'));
+        if (found === true) {
+            break;
+        }
+        const parent = dirname(directory);
+        if (found === undefined || parent === directory) {
+            // Not inside a git repository, or one we cannot see: only the project's own rules apply.
+            return Object.freeze([]);
+        }
+        directory = parent;
+        above.push(directory);
+    }
+    const result: Array<Readonly<{ path: string; outside: string; control: CapturedControl }>> = [];
+    for (const ancestor of above.reverse()) {
+        const path = join(ancestor, '.gitignore');
+        const control = await readGitIgnore(operations, path, signal, false);
+        if (control !== undefined) {
+            const outside = relative(ancestor, root).split(sep).join('/').normalize('NFC');
+            result.push(Object.freeze({ path, outside, control }));
+        }
+    }
+    return Object.freeze(result);
+}
+
+async function captureTree(
+    operations: PackNodeOperations,
+    root: string,
+    signal: AbortSignal,
+    required: RequiredSelection,
+): Promise<TreeSnapshot> {
     const controls = await rootControlBytes(operations, root, signal);
-    const policy = makePackageIgnorePolicy({
-        ...(controls.erdenIgnore === undefined ? {} : { erdenIgnore: controls.erdenIgnore.bytes }),
-        ...(controls.gitIgnore === undefined ? {} : { gitIgnore: controls.gitIgnore.bytes }),
-    });
+    // .erdenignore keeps its own rules; every .gitignore from the repository root down applies as well.
+    const policy = makePackageIgnorePolicy(
+        controls.erdenIgnore === undefined ? {} : { erdenIgnore: controls.erdenIgnore.bytes },
+    );
+    const gitIgnores: CapturedGitIgnore[] = [];
+    const rootFrames: GitIgnoreFrame[] = [];
+    for (const ancestor of await ancestorGitIgnores(operations, root, signal)) {
+        gitIgnores.push(Object.freeze({ path: ancestor.path, control: ancestor.control }));
+        rootFrames.push(
+            Object.freeze({ rules: makeGitIgnoreRules(ancestor.control.bytes), base: '', outside: ancestor.outside }),
+        );
+    }
+    if (controls.gitIgnore !== undefined) {
+        gitIgnores.push(Object.freeze({ path: join(root, '.gitignore'), control: controls.gitIgnore }));
+        rootFrames.push(Object.freeze({ rules: makeGitIgnoreRules(controls.gitIgnore.bytes), base: '', outside: '' }));
+    }
+    const ignoredDataFiles: string[] = [];
+    const gitIgnoredIncluded: string[] = [];
     const files: CapturedFile[] = [];
     const directories: CapturedDirectory[] = [];
     const portableEntries: Array<
@@ -598,7 +807,14 @@ async function captureTree(operations: PackNodeOperations, root: string, signal:
     let total = 0;
     let observed = 0;
     let observedNameBytes = 0;
-    async function visit(directory: string, prefix: string): Promise<void> {
+    async function visit(
+        directory: string,
+        prefix: string,
+        inherited: ReadonlyArray<GitIgnoreFrame>,
+        insideGitIgnored: boolean,
+    ): Promise<void> {
+        // The whole listing comes first, so a folder's own .gitignore applies to every entry beside it.
+        const names: string[] = [];
         const stream = await operations.opendir(directory);
         for await (const entry of stream) {
             signal.throwIfAborted();
@@ -613,17 +829,56 @@ async function captureTree(operations: PackNodeOperations, root: string, signal:
                     'The observed project tree exceeds the closed traversal bound',
                 );
             }
-            const logical = prefix.length === 0 ? entry.name : `${prefix}/${entry.name}`;
-            if (policy.isAlwaysExcluded(logical) || policy.isIgnored(logical)) {
+            names.push(entry.name);
+        }
+        let frames = inherited;
+        if (prefix.length > 0 && names.includes('.gitignore')) {
+            const path = join(directory, '.gitignore');
+            const nested = await readGitIgnore(operations, path, signal, true);
+            if (nested !== undefined) {
+                gitIgnores.push(Object.freeze({ path, control: nested }));
+                frames = [
+                    ...inherited,
+                    Object.freeze({ rules: makeGitIgnoreRules(nested.bytes), base: prefix, outside: '' }),
+                ];
+            }
+        }
+        for (const name of names) {
+            signal.throwIfAborted();
+            const logical = prefix.length === 0 ? name : `${prefix}/${name}`;
+            // Every .gitignore is an ignore control, so none is shipped.
+            if (policy.isAlwaysExcluded(logical) || name === '.gitignore') {
                 continue;
             }
-            const path = join(directory, entry.name);
+            if (policy.isIgnored(logical)) {
+                // Ignored entries are never inspected, so a data file is known by its name alone.
+                if (isDataFile(logical)) {
+                    ignoredDataFiles.push(logical.normalize('NFC'));
+                }
+                continue;
+            }
+            const path = join(directory, name);
             const stats = await operations.lstat(path, { bigint: true });
+            const isDirectory = stats.isDirectory() && !stats.isSymbolicLink();
+            const ignoredByGit = insideGitIgnored || gitIgnored(frames, logical, isDirectory);
+            if (ignoredByGit) {
+                // Decided before path validation, so an ignored entry with a name a package cannot hold stays harmless.
+                const candidate = logical.normalize('NFC');
+                if (isDirectory ? !mayHoldRequired(required, candidate) : !isRequiredFile(required, candidate)) {
+                    if (!isDirectory && isDataFile(candidate)) {
+                        ignoredDataFiles.push(candidate);
+                    }
+                    continue;
+                }
+            }
             const normalized = normalizePackagePath(logical);
-            if (stats.isDirectory() && !stats.isSymbolicLink()) {
+            if (ignoredByGit && !isDirectory) {
+                gitIgnoredIncluded.push(normalized);
+            }
+            if (isDirectory) {
                 directories.push(Object.freeze({ path: normalized, identity: identity(stats) }));
                 portableEntries.push(Object.freeze({ path: normalized, kind: 'directory' as const }));
-                await visit(path, logical);
+                await visit(path, logical, frames, ignoredByGit);
                 continue;
             }
             if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1n) {
@@ -662,15 +917,19 @@ async function captureTree(operations: PackNodeOperations, root: string, signal:
             portableEntries.push(Object.freeze({ path: normalized, kind: 'file' as const }));
         }
     }
-    await visit(root, '');
+    await visit(root, '', Object.freeze(rootFrames), false);
     files.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
     directories.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
+    gitIgnores.sort((a, b) => compareCodePoints(a.path, b.path));
     assertNoPortablePathConflicts(portableEntries);
     return Object.freeze({
         files: Object.freeze(files),
         directories: Object.freeze(directories),
         ignore: policy.selectedIgnoreFile,
         controls: Object.freeze(controls),
+        gitIgnores: Object.freeze(gitIgnores),
+        ignoredDataFiles: Object.freeze(ignoredDataFiles.sort(compareCodePoints)),
+        gitIgnoredIncluded: Object.freeze(gitIgnoredIncluded.sort(compareCodePoints)),
     });
 }
 
@@ -678,9 +937,10 @@ async function captureProjectTree(
     operations: PackNodeOperations,
     root: string,
     signal: AbortSignal,
+    required: RequiredSelection,
 ): Promise<TreeSnapshot> {
     try {
-        return await captureTree(operations, root, signal);
+        return await captureTree(operations, root, signal, required);
     } catch (cause) {
         if (isPackProjectError(cause)) {
             throw cause;
@@ -691,6 +951,18 @@ async function captureProjectTree(
             cause,
         );
     }
+}
+
+function pathNote(paths: ReadonlyArray<string>): Readonly<{ count: number; paths: ReadonlyArray<string> }> {
+    return { count: paths.length, paths: paths.slice(0, PACK_REPORT_PATH_LIST_LIMIT) };
+}
+
+/** The report's optional ignore notes, present only when there is something to say. */
+function ignoreNotes(tree: TreeSnapshot): Partial<Pick<PackProjectReport, 'ignoredDataFiles' | 'gitIgnoredIncluded'>> {
+    return {
+        ...(tree.ignoredDataFiles.length === 0 ? {} : { ignoredDataFiles: pathNote(tree.ignoredDataFiles) }),
+        ...(tree.gitIgnoredIncluded.length === 0 ? {} : { gitIgnoredIncluded: pathNote(tree.gitIgnoredIncluded) }),
+    };
 }
 
 function sha(bytes: Uint8Array): string {
@@ -706,6 +978,15 @@ function sameTree(left: TreeSnapshot, right: TreeSnapshot): boolean {
         left.ignore === right.ignore &&
         sameControl(left.controls.erdenIgnore, right.controls.erdenIgnore) &&
         sameControl(left.controls.gitIgnore, right.controls.gitIgnore) &&
+        left.gitIgnores.length === right.gitIgnores.length &&
+        left.gitIgnores.every((gitIgnore, index) => {
+            const other = right.gitIgnores[index];
+            return (
+                other !== undefined && gitIgnore.path === other.path && sameControl(gitIgnore.control, other.control)
+            );
+        }) &&
+        left.ignoredDataFiles.join('\0') === right.ignoredDataFiles.join('\0') &&
+        left.gitIgnoredIncluded.join('\0') === right.gitIgnoredIncluded.join('\0') &&
         left.directories.length === right.directories.length &&
         left.directories.every((directory, index) => {
             const other = right.directories[index];
@@ -1615,7 +1896,9 @@ async function packPromise(
                 cause,
             );
         }
-        const first = await captureProjectTree(fileSystem.operations, root.path, signal);
+        const parsedProject = snapshotParsedProject(state.project, location, root.path);
+        const required = requiredSelection(parsedProject);
+        const first = await captureProjectTree(fileSystem.operations, root.path, signal, required);
         const manifestFile = first.files.find(({ path }) => path === basename(location.filePath));
         if (manifestFile === undefined) {
             throw new PackProjectError(
@@ -1629,7 +1912,6 @@ async function packPromise(
                 'The shipped manifest changed after dependency-state authentication',
             );
         }
-        const parsedProject = snapshotParsedProject(state.project, location, root.path);
         let project: LoadedManifestV1;
         try {
             const manifest = normalizePublicationManifestV1(parsedProject.manifest);
@@ -1651,7 +1933,7 @@ async function packPromise(
         }
         assertRequired(project, first);
         const direct = dependencies(inspection.lock);
-        const second = await captureProjectTree(fileSystem.operations, root.path, signal);
+        const second = await captureProjectTree(fileSystem.operations, root.path, signal, required);
         if (!sameTree(first, second)) {
             throw new PackProjectError('PACK_PROJECT_SOURCE_INVALID', 'The project changed while it was being packed');
         }
@@ -1724,7 +2006,7 @@ async function packPromise(
                 cause,
             );
         }
-        const finalSource = await captureProjectTree(fileSystem.operations, root.path, signal);
+        const finalSource = await captureProjectTree(fileSystem.operations, root.path, signal, required);
         if (!sameTree(second, finalSource)) {
             throw new PackProjectError(
                 'PACK_PROJECT_SOURCE_INVALID',
@@ -1769,6 +2051,7 @@ async function packPromise(
                 fileCount: validated.manifest.files.length,
                 directDependencyCount: direct.length,
             },
+            ...ignoreNotes(finalSource),
             outcome: 'packed',
         });
     } catch (cause) {
