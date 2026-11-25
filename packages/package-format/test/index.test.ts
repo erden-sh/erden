@@ -367,10 +367,26 @@ describe('@erden/package-format V1 contract', () => {
         }
     });
 
+    it('keeps package and dependency IRIs whose host case differs from the URL serialization exactly as written', () => {
+        const canonicalIri = 'https://Example.TEST/packages/demo';
+        const dependencyIri = 'https://sBPMN.github.io/2.0/';
+        const fixture = encodeReferencePackageFixture({
+            ...GOLDEN_INPUT,
+            canonicalIri,
+            dependencies: [{ ...ZETA_DEPENDENCY, canonicalIri: dependencyIri }],
+        });
+        expect(fixture.manifest.canonicalIri).toBe(canonicalIri);
+        expect(fixture.manifest.dependencies.map((dependency) => dependency.canonicalIri)).toEqual([dependencyIri]);
+    });
+
     it.each([
         ['empty package IRI', { ...GOLDEN_INPUT, canonicalIri: '' }],
         ['relative package IRI', { ...GOLDEN_INPUT, canonicalIri: 'relative/package' }],
         ['noncanonical package IRI', { ...GOLDEN_INPUT, canonicalIri: 'HTTPS://EXAMPLE.TEST:443/packages/demo' }],
+        [
+            'default port beside a mixed-case host',
+            { ...GOLDEN_INPUT, canonicalIri: 'https://Example.test:443/packages/demo' },
+        ],
         ['nonexact package version', { ...GOLDEN_INPUT, version: '^1.2.3' }],
         ['oversized package version', { ...GOLDEN_INPUT, version: `1.2.3+${'a'.repeat(300)}` }],
         [

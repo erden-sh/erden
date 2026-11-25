@@ -1,0 +1,18 @@
+{
+    "description": "Canonical IRI spellings and the ownership key each has. Two IRIs with the same key differ only in the ASCII letter case of their authority and count as one IRI for ownership; identity stays the exact string. The registry's PostgreSQL function erden_iri_ownership_key is tested against the same cases.",
+    "keys": [
+        ["https://sBPMN.github.io/2.0/", "https://sbpmn.github.io/2.0/"],
+        ["https://sbpmn.github.io/2.0/", "https://sbpmn.github.io/2.0/"],
+        ["https://sBPMN.github.io/2.0/classes#userTask", "https://sbpmn.github.io/2.0/classes#userTask"],
+        ["http://www.w3.org/ns/prov-o#", "http://www.w3.org/ns/prov-o#"],
+        ["https://Example.TEST:8443/Onto/Path?Q=A#Frag", "https://example.test:8443/Onto/Path?Q=A#Frag"],
+        ["https://EXAMPLE.test#X", "https://example.test#X"],
+        ["https://EXAMPLE.test?X", "https://example.test?X"],
+        ["http://[2001:DB8::1]/Onto", "http://[2001:db8::1]/Onto"],
+        ["foo://Host.Example/Path", "foo://host.example/Path"],
+        ["urn:Example:Onto", "urn:Example:Onto"],
+        ["https://xn--bcher-kva.example/Onto", "https://xn--bcher-kva.example/Onto"],
+        ["https://example.test/%7Euser", "https://example.test/%7Euser"],
+        ["tag:Example.test,2026:Onto", "tag:Example.test,2026:Onto"]
+    ]
+}

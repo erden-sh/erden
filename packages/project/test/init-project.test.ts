@@ -228,6 +228,28 @@ describe('InitProject application operation', () => {
         expect(commits).toBe(0);
     });
 
+    it('keeps an upper-case host as written through init and the offline CheckProject', async () => {
+        const parent = tempRoot();
+        const report = await runInit(parent, 'project', {
+            canonicalIri: 'https://sBPMN.example.test/2.0/',
+            alias: '@example/mixed-case-host',
+            ownedIriPrefixes: ['https://sBPMN.example.test/2.0/'],
+        });
+        expect(report.manifest.canonicalIri).toBe('https://sBPMN.example.test/2.0/');
+        expect(readFileSync(join(parent, 'project', 'ontology.ttl'), 'utf8')).toContain(
+            '<https://sBPMN.example.test/2.0/>',
+        );
+        const checked = await Effect.runPromise(
+            nodeCheckProjectService.check({
+                from: join(parent, 'project'),
+                offline: true,
+            }),
+        );
+        expect(checked.outcome).toBe('passed');
+        expect(checked.manifest.canonicalIri).toBe('https://sBPMN.example.test/2.0/');
+        expect(checked.stages.core.borrowedTerms?.declared.every((iri) => !iri.includes('sbpmn'))).toBe(true);
+    });
+
     it('generates and checks a scaffold with safe non-ASCII IRIs', async () => {
         const parent = tempRoot();
         await runInit(parent, 'project', {
