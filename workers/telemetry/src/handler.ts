@@ -17,7 +17,11 @@
 //
 // The rate limit is keyed on the client's IP address (the CF-Connecting-IP header), which the rate-limit binding sees
 // in memory for the length of the request; it is never stored or logged.
-import { coarseCountry, json, reportAllowed, utcDay, type D1Database } from '../../shared/http.js';
+//
+// When the POSTHOG_PROJECT_TOKEN secret is set, each stored event is also forwarded to PostHog (forwardEvent), after
+// the response: its fields without the install ID, plus the country, under a fresh random distinct ID, in a request
+// the Worker builds itself, so it carries no header, address or identifier from the CLI's request.
+import { coarseCountry, json, reportAllowed, utcDay, type D1Database, type WorkerContext } from '../../shared/http.js';
 
 /** The Workers rate-limit binding (`ratelimits` in wrangler.jsonc). */
 export interface RateLimiter {
@@ -30,7 +34,15 @@ export interface Env {
     readonly REPORT_TOKEN?: string;
     /** Events per client IP address per minute; absent in local development. */
     readonly EVENT_LIMITER?: RateLimiter;
+    /** Secret; PostHog's project token. Events are forwarded to PostHog only when it is set and not empty. */
+    readonly POSTHOG_PROJECT_TOKEN?: string;
+    /** PostHog's ingestion host; DEFAULT_POSTHOG_HOST when absent. */
+    readonly POSTHOG_HOST?: string;
 }
+
+export const DEFAULT_POSTHOG_HOST = 'https://us.i.posthog.com';
+export const POSTHOG_EVENT = 'cli_command_run';
+const POSTHOG_TIMEOUT_MS = 5000;
 
 export const COMMAND_RUNS_RETENTION_DAYS = 730;
 export const ACTIVE_INSTALLS_RETENTION_DAYS = 35;
@@ -174,6 +186,60 @@ export async function storeEvent(db: D1Database, event: TelemetryEvent, country:
     ]);
 }
 
+/** The body forwardEvent posts to PostHog's capture API: a closed set of properties, none from the request. */
+export function posthogCapture(
+    token: string,
+    event: TelemetryEvent,
+    country: string,
+    now: Date,
+    distinctId: string,
+): Record<string, unknown> {
+    return {
+        api_key: token,
+        event: POSTHOG_EVENT,
+        // A fresh random ID per event, so PostHog cannot link one install's events; the install ID is never sent.
+        distinct_id: distinctId,
+        timestamp: now.toISOString(),
+        properties: {
+            command: event.command,
+            outcome: event.outcome,
+            duration_ms: event.durationMs,
+            version: event.version,
+            channel: event.channel,
+            os: event.os,
+            arch: event.arch,
+            country,
+            $geoip_disable: true,
+            $process_person_profile: false,
+        },
+    };
+}
+
+/**
+ * Forwards one stored event to PostHog (https://posthog.com/docs/api/capture), or does nothing when no project token
+ * is set. The request is built here from scratch: its only headers are the content type and a fixed User-Agent, so no
+ * client address, cookie or User-Agent reaches PostHog, which sees only Cloudflare's address. A failure or a timeout
+ * is dropped, never retried or logged.
+ */
+export async function forwardEvent(env: Env, event: TelemetryEvent, country: string, now: Date): Promise<void> {
+    const token = env.POSTHOG_PROJECT_TOKEN;
+    if (token === undefined || token === '') {
+        return;
+    }
+    const host = (env.POSTHOG_HOST ?? DEFAULT_POSTHOG_HOST).replace(/\/+$/u, '');
+    try {
+        await fetch(`${host}/i/v0/e/`, {
+            method: 'POST',
+            headers: new Headers({ 'content-type': 'application/json', 'user-agent': 'erden-telemetry-worker' }),
+            body: JSON.stringify(posthogCapture(token, event, country, now, crypto.randomUUID())),
+            redirect: 'manual',
+            signal: AbortSignal.timeout(POSTHOG_TIMEOUT_MS),
+        });
+    } catch {
+        // Forwarding is best effort: the event is already stored.
+    }
+}
+
 /** Whether the client is under the per-IP event limit; the address is used here only and never stored. */
 async function underRateLimit(request: Request, env: Env): Promise<boolean> {
     const address = request.headers.get('cf-connecting-ip');
@@ -183,7 +249,7 @@ async function underRateLimit(request: Request, env: Env): Promise<boolean> {
     return (await env.EVENT_LIMITER.limit({ key: address })).success;
 }
 
-async function handleEvent(request: Request, env: Env, now: Date): Promise<Response> {
+async function handleEvent(request: Request, env: Env, now: Date, context?: WorkerContext): Promise<Response> {
     if (!(await underRateLimit(request, env))) {
         return json({ error: 'too many events' }, 429, { 'retry-after': '60' });
     }
@@ -191,7 +257,10 @@ async function handleEvent(request: Request, env: Env, now: Date): Promise<Respo
     if (event === null) {
         return json({ error: 'not an erden.telemetry-event/v1 event' }, 400);
     }
-    await storeEvent(env.DB, event, coarseCountry(request), utcDay(now));
+    const country = coarseCountry(request);
+    await storeEvent(env.DB, event, country, utcDay(now));
+    // After the response, so the CLI never waits on PostHog.
+    context?.waitUntil(forwardEvent(env, event, country, now));
     return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } });
 }
 
@@ -273,11 +342,16 @@ async function handleReport(env: Env, now: Date): Promise<Response> {
     });
 }
 
-export async function handle(request: Request, env: Env, now: Date = new Date()): Promise<Response> {
+export async function handle(
+    request: Request,
+    env: Env,
+    now: Date = new Date(),
+    context?: WorkerContext,
+): Promise<Response> {
     const { pathname } = new URL(request.url);
     if (pathname === '/v1/events') {
         return request.method === 'POST'
-            ? await handleEvent(request, env, now)
+            ? await handleEvent(request, env, now, context)
             : json({ error: 'method not allowed' }, 405, { allow: 'POST' });
     }
     if (pathname === '/v1/report' && request.method === 'GET') {

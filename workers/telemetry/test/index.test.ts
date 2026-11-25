@@ -1,14 +1,16 @@
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TELEMETRY_COMMANDS, TELEMETRY_OUTCOMES } from '../../../apps/cli/src/telemetry.js';
+import type { WorkerContext } from '../../shared/http.js';
 import { testD1, type TestD1 } from '../../shared/test-d1.js';
 import {
     ACTIVE_INSTALLS_RETENTION_DAYS,
     COMMANDS,
     COMMAND_RUNS_RETENTION_DAYS,
     OUTCOMES,
+    DEFAULT_POSTHOG_HOST,
     dailyMaintenance,
     handle,
     parseEvent,
@@ -203,6 +205,169 @@ describe('telemetry Worker', () => {
                 batch: async () => await Promise.reject(new Error('down')),
             },
         };
-        expect((await worker.fetch(post(EVENT), broken)).status).toBe(503);
+        expect((await worker.fetch(post(EVENT), broken, context().context)).status).toBe(503);
+    });
+});
+
+/** A Worker context that keeps what it is asked to wait for, so a test can wait for it too. */
+function context(): { context: WorkerContext; settled: () => Promise<unknown> } {
+    const pending: Array<Promise<unknown>> = [];
+    return {
+        context: { waitUntil: (promise) => pending.push(promise) },
+        settled: async () => await Promise.all(pending),
+    };
+}
+
+/** What one forwarded request held. */
+interface Forwarded {
+    readonly url: string;
+    readonly method: string | undefined;
+    readonly headers: Array<[string, string]>;
+    readonly body: string;
+}
+
+/** A stand-in for the global fetch that records each forwarded request and answers with `answer`. */
+function stubFetch(
+    answer: () => Promise<Response> = async () => await Promise.resolve(new Response(null, { status: 200 })),
+): Forwarded[] {
+    const requests: Forwarded[] = [];
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+        requests.push({
+            url,
+            method: init.method,
+            headers: [...new Headers(init.headers).entries()],
+            body: init.body as string,
+        });
+        return await answer();
+    });
+    return requests;
+}
+
+describe('telemetry Worker forwarding to PostHog', () => {
+    const PROJECT_TOKEN = 'phc_testprojecttoken';
+    const CLIENT_HEADERS = {
+        'cf-connecting-ip': '203.0.113.9',
+        'x-forwarded-for': '203.0.113.9',
+        'x-real-ip': '203.0.113.9',
+        'true-client-ip': '203.0.113.9',
+        forwarded: 'for=203.0.113.9',
+        cookie: 'session=abc',
+        'user-agent': 'erden/0.1.0 (linux; x64)',
+    };
+
+    function forwarding(): Env & { DB: TestD1 } {
+        return { ...environment(), POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN, POSTHOG_HOST: 'https://posthog.example' };
+    }
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('sends nothing without a project token', async () => {
+        const requests = stubFetch();
+        for (const env of [environment(), { ...environment(), POSTHOG_PROJECT_TOKEN: '' }]) {
+            const { context: ctx, settled } = context();
+            expect((await handle(post(EVENT), env, NOW, ctx)).status).toBe(204);
+            await settled();
+        }
+        expect(requests).toEqual([]);
+    });
+
+    it("posts one closed, ID-free event to the capture API, with none of the request's headers", async () => {
+        const requests = stubFetch();
+        const { context: ctx, settled } = context();
+        const response = await handle(post(EVENT, 'DE', CLIENT_HEADERS), forwarding(), NOW, ctx);
+        expect(response.status).toBe(204);
+        await settled();
+        expect(requests).toHaveLength(1);
+        const [forwarded] = requests as [Forwarded];
+        expect(forwarded.url).toBe('https://posthog.example/i/v0/e/');
+        expect(forwarded.method).toBe('POST');
+        const body = JSON.parse(forwarded.body) as Record<string, unknown>;
+        expect(typeof body.distinct_id).toBe('string');
+        expect(body.distinct_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+        expect(body.distinct_id).not.toBe(EVENT.installId);
+        expect(body).toEqual({
+            api_key: PROJECT_TOKEN,
+            event: 'cli_command_run',
+            distinct_id: body.distinct_id,
+            timestamp: '2026-11-19T12:00:00.000Z',
+            properties: {
+                command: 'check',
+                outcome: 'success',
+                duration_ms: 812,
+                version: '0.1.0',
+                channel: 'stable',
+                os: 'linux',
+                arch: 'x64',
+                country: 'DE',
+                $geoip_disable: true,
+                $process_person_profile: false,
+            },
+        });
+        expect(forwarded.body).not.toContain(EVENT.installId);
+        expect(forwarded.body).not.toContain('203.0.113');
+        expect(forwarded.headers).toEqual([
+            ['content-type', 'application/json'],
+            ['user-agent', 'erden-telemetry-worker'],
+        ]);
+    });
+
+    it('gives each forwarded event its own distinct ID and uses the default host when none is set', async () => {
+        const requests = stubFetch();
+        const env = { ...environment(), POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN };
+        const { context: ctx, settled } = context();
+        await handle(post(EVENT), env, NOW, ctx);
+        await handle(post(EVENT), env, NOW, ctx);
+        await settled();
+        expect(requests.map(({ url }) => url)).toEqual([
+            `${DEFAULT_POSTHOG_HOST}/i/v0/e/`,
+            `${DEFAULT_POSTHOG_HOST}/i/v0/e/`,
+        ]);
+        const ids = requests.map(({ body }) => (JSON.parse(body) as { distinct_id: string }).distinct_id);
+        expect(new Set(ids).size).toBe(2);
+    });
+
+    it('forwards nothing for refused or rate-limited events', async () => {
+        const requests = stubFetch();
+        const limiter: RateLimiter = { limit: async () => await Promise.resolve({ success: false }) };
+        const { context: ctx, settled } = context();
+        expect((await handle(post({ ...EVENT, extra: 'x' }), forwarding(), NOW, ctx)).status).toBe(400);
+        expect(
+            (await handle(post(EVENT, 'DE', CLIENT_HEADERS), { ...forwarding(), EVENT_LIMITER: limiter }, NOW, ctx))
+                .status,
+        ).toBe(429);
+        await settled();
+        expect(requests).toEqual([]);
+    });
+
+    it('still answers 204 and stores the event when PostHog fails, and stores the same rows as without forwarding', async () => {
+        const failing = [
+            async () => await Promise.reject(new Error('unreachable')),
+            async () => await Promise.resolve(new Response('no', { status: 500 })),
+        ];
+        const plain = environment();
+        await handle(post(EVENT), plain, NOW);
+        for (const answer of failing) {
+            stubFetch(answer);
+            const env = forwarding();
+            const { context: ctx, settled } = context();
+            expect((await handle(post(EVENT), env, NOW, ctx)).status).toBe(204);
+            await expect(settled()).resolves.toBeDefined();
+            for (const table of ['command_runs', 'active_installs', 'active_totals']) {
+                expect(env.DB.rows(`SELECT * FROM ${table}`)).toEqual(plain.DB.rows(`SELECT * FROM ${table}`));
+            }
+            expect(env.DB.rows('SELECT COUNT(*) AS n FROM command_runs')).toEqual([{ n: 1 }]);
+        }
+    });
+
+    it('waits for forwarding after the response, through the Worker context', async () => {
+        const answer = Promise.withResolvers<Response>();
+        stubFetch(async () => await answer.promise);
+        const { context: ctx, settled } = context();
+        const response = await worker.fetch(post(EVENT), forwarding(), ctx);
+        expect(response.status).toBe(204);
+        answer.resolve(new Response(null, { status: 200 }));
+        await settled();
     });
 });
