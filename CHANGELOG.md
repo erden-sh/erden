@@ -33,6 +33,12 @@ Changes to the `erden` CLI that a user or a script can see. Each release's notes
 
 ### Changed
 
+- **Usage telemetry is also forwarded to PostHog.** The telemetry Worker still checks and stores each anonymous event
+  as before, and now also forwards it to Erden's PostHog Cloud US project (Ingenio Ventures Inc operates Erden and uses
+  PostHog as a processor) as `cli_command_run`: the command, outcome, duration, version, channel, OS, architecture and
+  country, under a new random ID per event. The install ID, IP address and User-Agent are never forwarded, and PostHog's
+  GeoIP lookup is off. The CLI sends the same event as before, and turning telemetry off stops both. See
+  [docs/telemetry.md](docs/telemetry.md#forwarding-to-posthog).
 - **New exit code 4 (public interface).** `erden query [project-dir]` exits 4 when it answered but the answer is
   partial, or when `--regime entailed` could not be had. 0 to 3 keep their meaning, and no other command returns 4.
   `--allow-incomplete` turns 4 into 0. Anonymous telemetry counts exit 4 as `success`.

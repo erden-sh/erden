@@ -5,8 +5,9 @@ page lists all of it. The code that sends it is in [`apps/cli/src`](../apps/cli/
 `updates.ts`, `background.ts`, `upgrade.ts`), and the code that receives and stores it is in [`workers/`](../workers),
 with each database's schema in its `schema.sql`. Both are open source, so you can check this page against them.
 
-Everything goes to Erden's own Cloudflare Workers. There is no third-party analytics service, no advertising and no
-sharing or selling of the data. Ingenio Ventures Inc runs these services.
+Everything goes to Erden's own Cloudflare Workers. The telemetry Worker also forwards each usage event it stores,
+without the install ID or anything from your connection, to Erden's PostHog project ([below](#forwarding-to-posthog)).
+There is no advertising and no sharing or selling of the data. Ingenio Ventures Inc runs these services.
 
 ## Usage telemetry
 
@@ -51,6 +52,44 @@ to the database or to logs. The Workers' request logs (Workers Logs) are turned 
 
 To see exactly what would be sent, set `ERDEN_TELEMETRY_DEBUG=1`: each event is printed on standard error instead of
 being queued.
+
+### Forwarding to PostHog
+
+Ingenio Ventures Inc operates Erden and uses [PostHog](https://posthog.com) Cloud US as a processor for product
+analytics. After the telemetry Worker has checked and stored an event as above, it forwards that event to PostHog's
+capture API (`https://us.i.posthog.com/i/v0/e/`), in the background, so the CLI never waits for it. The forwarded
+event is named `cli_command_run` and holds exactly:
+
+| Property                  | Example   | What it is                                                              |
+| ------------------------- | --------- | ----------------------------------------------------------------------- |
+| `command`                 | `check`   | the command's name, as above                                            |
+| `outcome`                 | `success` | the outcome, as above                                                   |
+| `duration_ms`             | `812`     | the duration in whole milliseconds, as above                            |
+| `version`                 | `0.1.0`   | the CLI's version                                                       |
+| `channel`                 | `stable`  | `stable` or `canary`                                                    |
+| `os`                      | `linux`   | `linux`, `darwin` or `win32`                                            |
+| `arch`                    | `x64`     | `x64` or `arm64`                                                        |
+| `country`                 | `DE`      | the two-letter country the Worker derived, as above; empty when unknown |
+| `$geoip_disable`          | `true`    | tells PostHog not to look up a location                                 |
+| `$process_person_profile` | `false`   | tells PostHog not to make a person profile                              |
+
+with the time the Worker received it and a **new random ID for every event** (PostHog's `distinct_id`), so PostHog
+cannot tell which events came from the same installation.
+
+What is **not** forwarded:
+
+- **The install ID.** It stays in the Worker's short-lived list of active installs and nowhere else, so install counts
+  are made only from that list, never in PostHog.
+- **Your IP address.** The Worker makes the request to PostHog itself, with only a content type and the fixed
+  User-Agent `erden-telemetry-worker`, so none of your connection's headers (no IP address header, cookie or
+  User-Agent) reaches PostHog. The only address PostHog sees is Cloudflare's, and GeoIP lookups are turned off; the only
+  location PostHog gets is the coarse country above.
+- **Your User-Agent**, or anything else from your request beyond the event's own fields.
+
+Events the Worker refuses or rate-limits are not forwarded. A forwarding failure is dropped, not retried or logged, and
+never changes what is stored. The storage and retention above are unchanged by forwarding; PostHog's retention for
+Erden's project applies to the forwarded events. Turning telemetry off in the CLI stops both, since nothing is sent to
+the Worker at all.
 
 ### When no event is sent
 
