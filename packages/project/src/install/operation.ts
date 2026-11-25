@@ -481,7 +481,14 @@ function resolutionFailure(cause: unknown): InstallProjectError {
         : isDependencyResolutionError(cause) && cause.code === 'toolchain-incompatible'
           ? // The resolver names the dependency and the toolchain; the remedy is a republish, not a local fix.
             new InstallProjectError('INSTALL_PROJECT_RESOLUTION_FAILED', cause.message, cause)
-          : mapFailure('INSTALL_PROJECT_RESOLUTION_FAILED', 'The dependency closure could not be resolved')(cause);
+          : isDependencyResolutionError(cause) && (cause.code === 'alias-not-found' || cause.code === 'missing-version')
+            ? // The resolver names the alias or canonical IRI the registry does not publish.
+              new InstallProjectError(
+                  'INSTALL_PROJECT_RESOLUTION_FAILED',
+                  `The dependency closure could not be resolved: ${cause.message}`,
+                  cause,
+              )
+            : mapFailure('INSTALL_PROJECT_RESOLUTION_FAILED', 'The dependency closure could not be resolved')(cause);
 }
 
 function stateFailure(message: string) {

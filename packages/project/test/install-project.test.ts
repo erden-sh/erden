@@ -916,6 +916,32 @@ describe('fixture dependency registry and InstallProject', () => {
         expect(accessorInvoked).toBe(false);
     });
 
+    it('names the alias or canonical IRI the registry does not publish', async () => {
+        for (const [identifier, expected] of [
+            [
+                '@erden/schema-org',
+                `The dependency closure could not be resolved: The registry ${REGISTRY} has no published ontology with the alias @erden/schema-org`,
+            ],
+            [
+                'https://example.test/missing',
+                'The dependency closure could not be resolved: No published versions exist for https://example.test/missing',
+            ],
+        ] as const) {
+            const root = makeTestTempRoot('erden-install-missing-dependency-');
+            roots.push(root);
+            const projectRoot = join(root, 'project');
+            await createProject(projectRoot, { [identifier]: '*' });
+            const fixture = serviceFixture(root, fakeStore().service);
+            const failure = await Effect.runPromise(fixture.service.install({ from: projectRoot }).pipe(Effect.flip));
+            expect(failure).toBeInstanceOf(InstallProjectError);
+            expect(failure).toMatchObject({ code: 'INSTALL_PROJECT_RESOLUTION_FAILED', message: expected });
+            expect(renderInstallProjectError(failure)).toBe(
+                `Erden install failed [INSTALL_PROJECT_RESOLUTION_FAILED]: ${expected}\n`,
+            );
+            await expect(fs.access(join(projectRoot, 'erden.lock'))).rejects.toThrow();
+        }
+    });
+
     it('reuses a matching cached closure through the no-transport registry and gates unavailable content offline', async () => {
         const root = makeTestTempRoot('erden-install-cached-no-transport-');
         roots.push(root);

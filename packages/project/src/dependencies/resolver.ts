@@ -1199,7 +1199,7 @@ async function resolveWithRegistry(
             if (result === null) {
                 throw new DependencyResolutionError(
                     'alias-not-found',
-                    `The catalog has no published identity for ${identifier}`,
+                    `The registry ${registryOrigin} has no published ontology with the alias ${identifier}`,
                 );
             }
             canonicalIri = validateAliasResolution(result, identifier).canonicalIri;

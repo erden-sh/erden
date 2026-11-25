@@ -606,6 +606,15 @@ function resolutionError(cause: unknown): ProjectDependenciesError {
             }
             nested = descriptor.value;
         }
+        if (cause.code === 'alias-not-found' || cause.code === 'missing-version') {
+            // The resolver names the alias or canonical IRI the registry does not publish; keep the code and the
+            // generic prefix so existing matches still hold, and say which dependency is missing.
+            return new ProjectDependenciesError(
+                'PROJECT_DEPENDENCIES_RESOLUTION_FAILED',
+                `The complete dependency graph could not be resolved: ${cause.message}`,
+                cause,
+            );
+        }
     }
     return new ProjectDependenciesError(
         'PROJECT_DEPENDENCIES_RESOLUTION_FAILED',

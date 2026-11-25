@@ -5,7 +5,14 @@ import { Effect } from 'effect';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { RegistryClientError } from '@erden/client';
-import { CurrentToolchainError } from '@erden/contracts';
+import {
+    CurrentToolchainError,
+    makeCurrentToolchainService,
+    makeEmptyLockfile,
+    normalizeManifestV1,
+    serializeLockfileBytes,
+    serializeManifestV1,
+} from '@erden/contracts';
 import {
     nodeCheckProjectService,
     nodeDoctorService,
@@ -15,6 +22,10 @@ import {
     nodeStoreMaintenanceService,
     nodeStorePathService,
     makeNodeInstallProjectService,
+    makeDependencyResolverFromReleaseIndex,
+    makeNodeProjectDependencyStateFileSystemPort,
+    makeProjectDependenciesService,
+    makeProjectDependencyStateService,
     nodeProjectDependenciesService,
     unavailableDependencyRegistry,
     decodeInstallProjectReport,
@@ -43,6 +54,7 @@ import {
 import { cleanupTestTempRoot, makeTestTempRoot } from '../../../scripts/lib/test-temp-root.mjs';
 import { CLI_EXIT, CLI_HELP, runCli, type CliRuntime, type CliServices } from '../src/index.js';
 import type { CliAuthenticationRuntime } from '../src/index.js';
+import { makeCliDependencyRegistryComposition } from '../src/registry.js';
 
 const roots: string[] = [];
 function tempRoot(): string {
@@ -1273,6 +1285,66 @@ describe('erden CLI adapter', () => {
             { identifier: 'https://user@example.test/layer', from: cwd },
             { identifier: 'https://user@example.test/layer', manifestPath: join(cwd, 'erden.config.json') },
         ]);
+    });
+
+    it('names an alias the registry does not publish when add fails, with and without --json', async () => {
+        const cwd = tempRoot();
+        const registry = 'https://registry.example.test';
+        const toolchain = Object.freeze({
+            validator: Object.freeze({ version: '1.0.0', sha256: 'a'.repeat(64) }),
+            reasoner: Object.freeze({ version: '1.0.0', sha256: 'b'.repeat(64) }),
+        });
+        const manifest = normalizeManifestV1({
+            schemaVersion: 1,
+            canonicalIri: 'https://example.test/project',
+            alias: '@example/project',
+            ownedIriPrefixes: ['https://example.test/project#'],
+            registry,
+            sources: { ontology: ['ontology.ttl'] },
+        });
+        writeFileSync(join(cwd, 'erden.config.json'), serializeManifestV1(manifest, 'json'), { mode: 0o644 });
+        writeFileSync(join(cwd, 'erden.lock'), serializeLockfileBytes(makeEmptyLockfile(manifest, toolchain)), {
+            mode: 0o644,
+        });
+        writeFileSync(join(cwd, 'ontology.ttl'), '<urn:root> <urn:p> <urn:o> .\n', { mode: 0o644 });
+        const aliases: string[] = [];
+        function unexpected(): Promise<never> {
+            return Promise.reject(new Error('unexpected registry read'));
+        }
+        // The registry answers the alias lookup with 404, which the HTTP client reports as CLIENT_NOT_FOUND.
+        const composition = makeCliDependencyRegistryComposition(
+            {
+                readCredential: () => null,
+                resolveAlias: ({ alias }) => {
+                    aliases.push(alias);
+                    return Promise.reject(new RegistryClientError('CLIENT_NOT_FOUND'));
+                },
+                listReleases: unexpected,
+                getExactRelease: unexpected,
+                openArchive: unexpected,
+                now: () => Date.now(),
+            },
+            { write: () => undefined },
+        );
+        const services: CliServices = {
+            ...captureRuntime(cwd).runtime.services,
+            dependencies: makeProjectDependenciesService(
+                makeProjectDependencyStateService(makeNodeProjectDependencyStateFileSystemPort()),
+                makeCurrentToolchainService(() => toolchain),
+                makeDependencyResolverFromReleaseIndex(composition.releaseIndex),
+                Object.freeze({ installCommitted: () => Effect.die('install must not run') }),
+            ),
+        };
+        const expected = `Erden dependency change failed [PROJECT_DEPENDENCIES_RESOLUTION_FAILED]: The complete dependency graph could not be resolved: The registry ${registry} has no published ontology with the alias @erden/schema-org\n`;
+        for (const format of [[], ['--json']]) {
+            const captured = captureRuntime(cwd, services);
+            expect(await runCli(['add', '@erden/schema-org@*', ...format], captured.runtime)).toBe(
+                CLI_EXIT.operational,
+            );
+            expect(captured.stdout).toEqual([]);
+            expect(captured.stderr).toEqual([expected]);
+        }
+        expect(aliases).toEqual(['@erden/schema-org', '@erden/schema-org']);
     });
 
     it('renders path commands as raw physical paths plus one LF', async () => {

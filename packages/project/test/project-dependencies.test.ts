@@ -226,6 +226,78 @@ describe('ProjectDependencies add/remove lifecycle', () => {
         expect(calls).toEqual([`alias:${REGISTRY}:@example/a`, `page:${REGISTRY}:${A}:first`]);
     });
 
+    it('names the alias or canonical IRI the registry does not publish on add and update', async () => {
+        const manifest = baseManifest();
+        const root = await createProject(manifest);
+        const manifestBytes = await fs.readFile(join(root, 'erden.config.json'));
+        const lockBytes = await fs.readFile(join(root, 'erden.lock'));
+        const installer = fakeInstaller();
+        const service = makeProjectDependenciesService(
+            makeProjectDependencyStateService(makeNodeProjectDependencyStateFileSystemPort()),
+            makeCurrentToolchainService(() => TOOLCHAIN),
+            makeDependencyResolver(registryFixture()),
+            installer.service,
+        );
+        for (const [identifier, expected] of [
+            [
+                '@erden/schema-org',
+                `The complete dependency graph could not be resolved: The registry ${REGISTRY} has no published ontology with the alias @erden/schema-org`,
+            ],
+            [
+                'https://example.test/missing',
+                'The complete dependency graph could not be resolved: No published versions exist for https://example.test/missing',
+            ],
+        ] as const) {
+            const failure = await Effect.runPromise(
+                service.add({ identifier, range: '*', from: root }).pipe(Effect.flip),
+            );
+            expect(failure).toMatchObject({ code: 'PROJECT_DEPENDENCIES_RESOLUTION_FAILED', message: expected });
+            expect(renderProjectDependenciesError(failure)).toBe(
+                `Erden dependency change failed [PROJECT_DEPENDENCIES_RESOLUTION_FAILED]: ${expected}\n`,
+            );
+        }
+        expect(installer.calls).toHaveLength(0);
+        expect(await fs.readFile(join(root, 'erden.config.json'))).toEqual(manifestBytes);
+        expect(await fs.readFile(join(root, 'erden.lock'))).toEqual(lockBytes);
+
+        const authored = baseManifest({ '@example/a': '*' });
+        const lock = (
+            await Effect.runPromise(
+                makeDependencyResolver(registryFixture()).resolve({ manifest: authored, toolchain: TOOLCHAIN }),
+            )
+        ).lock;
+        const updateRoot = await createProject(authored, lock);
+        const encoded = packageA();
+        const withoutAlias = makeFixtureDependencyRegistry({
+            registryOrigin: REGISTRY,
+            aliases: [],
+            packages: [
+                {
+                    canonicalIri: A,
+                    version: '1.0.0',
+                    archiveSha256: encoded.archiveSha256,
+                    manifest: encoded.manifest,
+                    archive: encoded.archiveBytes,
+                },
+            ],
+        });
+        const updates = makeProjectDependenciesService(
+            makeProjectDependencyStateService(makeNodeProjectDependencyStateFileSystemPort()),
+            makeCurrentToolchainService(() => TOOLCHAIN),
+            makeDependencyResolver(withoutAlias),
+            installer.service,
+        );
+        const expected = `The complete dependency graph could not be resolved: The registry ${REGISTRY} has no published ontology with the alias @example/a`;
+        for (const input of [{ from: updateRoot }, { identifier: '@example/a', from: updateRoot }]) {
+            const failure = await Effect.runPromise(updates.update(input).pipe(Effect.flip));
+            expect(failure).toMatchObject({ code: 'PROJECT_DEPENDENCIES_RESOLUTION_FAILED', message: expected });
+            expect(renderProjectDependencyUpdateError(failure)).toBe(
+                `Erden dependency update failed [PROJECT_DEPENDENCIES_RESOLUTION_FAILED]: ${expected}\n`,
+            );
+        }
+        expect(installer.calls).toHaveLength(0);
+    });
+
     it('adds through full-graph resolution, commits the pair, then installs it', async () => {
         const manifest = baseManifest();
         const root = await createProject(manifest);
