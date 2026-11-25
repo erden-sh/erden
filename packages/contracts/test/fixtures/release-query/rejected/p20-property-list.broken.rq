@@ -1,0 +1,1 @@
+SELECT * { [ <urn:p> ?o ] <urn:q> ?x }

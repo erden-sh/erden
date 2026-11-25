@@ -1,0 +1,1 @@
+SELECT * { SERVICE SILENT <http://x.test/sparql> { ?s ?p ?o } }

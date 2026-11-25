@@ -1,0 +1,1 @@
+ASK FROM <http://x.test/g> { ?s ?p ?o }

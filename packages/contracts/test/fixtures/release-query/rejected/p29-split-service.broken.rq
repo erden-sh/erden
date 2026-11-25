@@ -1,0 +1,2 @@
+SELECT * { SER# x
+VICE <http://x.test/> { ?s ?p ?o } }

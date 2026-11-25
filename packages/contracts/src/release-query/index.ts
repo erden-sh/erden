@@ -1,6 +1,8 @@
 export * from './model.js';
 export * from './errors.js';
 export * from './result.js';
+export { parseReleaseQuery, serializeReleaseQuery } from './canonical.js';
+export { decodeReleaseQueryBytes } from './lexer.js';
 export {
     RELEASE_QUERY_TRANSPORT_CODES,
     decodeReleaseQueryErrorBody,

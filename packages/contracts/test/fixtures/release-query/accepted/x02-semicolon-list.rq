@@ -1,0 +1,2 @@
+PREFIX ex: <https://example.test/onto#>
+SELECT ?s ?o WHERE { ?s ex:p ?o ; ex:q ?o , ?o ; . }

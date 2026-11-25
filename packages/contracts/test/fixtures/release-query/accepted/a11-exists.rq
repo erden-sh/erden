@@ -1,0 +1,4 @@
+PREFIX ex: <https://example.test/onto#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+SELECT ?c WHERE { ?c a owl:Class FILTER NOT EXISTS { ?c rdfs:subClassOf ?x } } ORDER BY ?c

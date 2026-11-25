@@ -1,0 +1,1 @@
+SELECT * { BIND (BNODE() AS ?b) }

@@ -1,0 +1,2 @@
+PREFIX fn: <http://www.w3.org/2005/xpath-functions#>
+SELECT * { ?s ?p ?o FILTER (fn:string-length(?o) > 1) }

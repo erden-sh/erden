@@ -1,0 +1,1 @@
+SELECT REDUCED ?s { ?s ?p ?o }

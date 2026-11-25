@@ -1,0 +1,2 @@
+# \u000A SERVICE
+SELECT * { ?s ?p ?o }

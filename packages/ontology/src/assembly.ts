@@ -102,6 +102,68 @@ export function assembleOntology(
     descriptors: ReadonlyArray<TurtleSourceDescriptor>,
     limits?: OntologyAssemblyLimits,
 ): Effect.Effect<AssembledOntology, AssembleOntologyError> {
+    return assembleOntologyWith(resources, descriptors, limits, null).pipe(Effect.map(({ graph }) => graph));
+}
+
+/** A source a tolerant assembly left out because it could not be decoded or parsed. */
+export interface UnparsedOntologySource {
+    readonly sourceId: string;
+    readonly locator: string;
+    /** Where the error is, when the parser reports it. */
+    readonly line: number | null;
+    readonly column: number | null;
+    readonly code: string;
+    readonly message: string;
+}
+
+export type UnparsableSourceError =
+    | OntologySourceParseError
+    | OntologySourceRefusedError
+    | TurtleSourceEncodingError
+    | TurtleSourceParseError
+    | UnsupportedSemanticFormatError;
+
+function unparsedSource(descriptor: TurtleSourceDescriptor, cause: UnparsableSourceError): UnparsedOntologySource {
+    const location = 'location' in cause ? cause.location : undefined;
+    const line = typeof location?.line === 'number' ? location.line : null;
+    const column = typeof location?.column === 'number' ? location.column : null;
+    // The parser's message starts with the file and position, which the fields already hold.
+    const prefix = `${descriptor.locator}${line === null ? '' : `:${String(line)}`}${column === null ? '' : `:${String(column)}`} `;
+    return Object.freeze({
+        sourceId: descriptor.id,
+        locator: descriptor.locator,
+        line,
+        column,
+        code: cause.code,
+        message: cause.message.startsWith(prefix) ? cause.message.slice(prefix.length) : cause.message,
+    });
+}
+
+/**
+ * Assembles every source that decodes and parses, and lists the others instead of failing: what a query over a
+ * broken project answers from. The assembled graph is the one `assembleOntology` would give for the parsed sources
+ * alone, in their order; no source is required.
+ */
+export function assembleOntologyTolerant(
+    resources: TextResourcePort,
+    descriptors: ReadonlyArray<TurtleSourceDescriptor>,
+    limits?: OntologyAssemblyLimits,
+): Effect.Effect<
+    Readonly<{ graph: AssembledOntology; unparsed: ReadonlyArray<UnparsedOntologySource> }>,
+    AssembleOntologyError
+> {
+    const unparsed: UnparsedOntologySource[] = [];
+    return assembleOntologyWith(resources, descriptors, limits, (descriptor, cause) => {
+        unparsed.push(unparsedSource(descriptor, cause));
+    }).pipe(Effect.map(({ graph }) => Object.freeze({ graph, unparsed: Object.freeze(unparsed) })));
+}
+
+function assembleOntologyWith(
+    resources: TextResourcePort,
+    descriptors: ReadonlyArray<TurtleSourceDescriptor>,
+    limits: OntologyAssemblyLimits | undefined,
+    skip: ((descriptor: TurtleSourceDescriptor, cause: UnparsableSourceError) => void) | null,
+): Effect.Effect<Readonly<{ graph: AssembledOntology }>, AssembleOntologyError> {
     const maximumSourceBytes = limits?.maximumSourceBytes;
     const maximumStatements = limits?.maximumStatements;
     return Effect.gen(function* () {
@@ -114,7 +176,7 @@ export function assembleOntology(
         ) {
             return yield* Effect.fail(new OntologyAssemblyLimitError('bytes'));
         }
-        if (descriptors.length === 0) {
+        if (descriptors.length === 0 && skip === null) {
             return yield* Effect.fail(
                 new RequiredStageUnavailableError(
                     'source',
@@ -128,8 +190,10 @@ export function assembleOntology(
         const byQuad = new Map<string, MutableQuadProvenance>();
         let sourceBytes = 0;
         let statements = 0;
-        for (let sourceIndex = 0; sourceIndex < descriptors.length; sourceIndex += 1) {
-            const descriptor = descriptors[sourceIndex];
+        for (let descriptorIndex = 0; descriptorIndex < descriptors.length; descriptorIndex += 1) {
+            const descriptor = descriptors[descriptorIndex];
+            // The index among assembled sources: a source a tolerant assembly leaves out takes none.
+            const sourceIndex = loaded.length;
             if (descriptor === undefined) {
                 continue;
             }
@@ -138,50 +202,70 @@ export function assembleOntology(
                 .pipe(
                     Effect.mapError((cause) => new RequiredStageUnavailableError('source', descriptor.locator, cause)),
                 );
-            const text = yield* Effect.try({
-                try: () => {
-                    sourceBytes += bytes.byteLength;
-                    if (maximumSourceBytes !== undefined && sourceBytes > maximumSourceBytes) {
-                        throw new OntologyAssemblyLimitError('bytes');
-                    }
-                    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes);
-                },
-                catch: (cause) =>
-                    cause instanceof OntologyAssemblyLimitError
-                        ? cause
-                        : new TurtleSourceEncodingError(descriptor.id, descriptor.locator, cause),
-            });
-            const quads = yield* Effect.try({
-                try: () =>
-                    parseOntologySourceText(
-                        descriptor,
-                        text,
-                        maximumStatements === undefined ? undefined : maximumStatements - statements,
-                    ),
-                catch: (
-                    cause,
-                ):
-                    | TurtleSourceParseError
-                    | OntologySourceParseError
-                    | OntologySourceRefusedError
-                    | UnsupportedSemanticFormatError
-                    | OntologyAssemblyLimitError => {
-                    if (
-                        cause instanceof TurtleSourceParseError ||
-                        cause instanceof OntologySourceParseError ||
-                        cause instanceof OntologySourceRefusedError ||
-                        cause instanceof UnsupportedSemanticFormatError ||
+            const decoded = yield* Effect.result(
+                Effect.try({
+                    try: () => {
+                        sourceBytes += bytes.byteLength;
+                        if (maximumSourceBytes !== undefined && sourceBytes > maximumSourceBytes) {
+                            throw new OntologyAssemblyLimitError('bytes');
+                        }
+                        return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes);
+                    },
+                    catch: (cause) =>
                         cause instanceof OntologyAssemblyLimitError
-                    ) {
-                        return cause;
-                    }
-                    return new TurtleSourceParseError(
-                        descriptor.id,
-                        { file: descriptor.locator, line: 1, column: 1 },
+                            ? cause
+                            : new TurtleSourceEncodingError(descriptor.id, descriptor.locator, cause),
+                }),
+            );
+            if (decoded._tag === 'Failure') {
+                if (skip !== null && decoded.failure instanceof TurtleSourceEncodingError) {
+                    skip(descriptor, decoded.failure);
+                    continue;
+                }
+                return yield* Effect.fail(decoded.failure);
+            }
+            const text = decoded.success;
+            const parsed = yield* Effect.result(
+                Effect.try({
+                    try: () =>
+                        parseOntologySourceText(
+                            descriptor,
+                            text,
+                            maximumStatements === undefined ? undefined : maximumStatements - statements,
+                        ),
+                    catch: (
                         cause,
-                    );
-                },
-            });
+                    ):
+                        | TurtleSourceParseError
+                        | OntologySourceParseError
+                        | OntologySourceRefusedError
+                        | UnsupportedSemanticFormatError
+                        | OntologyAssemblyLimitError => {
+                        if (
+                            cause instanceof TurtleSourceParseError ||
+                            cause instanceof OntologySourceParseError ||
+                            cause instanceof OntologySourceRefusedError ||
+                            cause instanceof UnsupportedSemanticFormatError ||
+                            cause instanceof OntologyAssemblyLimitError
+                        ) {
+                            return cause;
+                        }
+                        return new TurtleSourceParseError(
+                            descriptor.id,
+                            { file: descriptor.locator, line: 1, column: 1 },
+                            cause,
+                        );
+                    },
+                }),
+            );
+            if (parsed._tag === 'Failure') {
+                if (skip !== null && !(parsed.failure instanceof OntologyAssemblyLimitError)) {
+                    skip(descriptor, parsed.failure);
+                    continue;
+                }
+                return yield* Effect.fail(parsed.failure);
+            }
+            const quads = parsed.success;
             statements += quads.length;
             loaded.push({
                 descriptor,
@@ -225,6 +309,6 @@ export function assembleOntology(
                 asserted: value.asserted,
                 inferred: value.inferred,
             }));
-        return { dataset, sources: loaded, provenance };
+        return { graph: { dataset, sources: loaded, provenance } };
     });
 }

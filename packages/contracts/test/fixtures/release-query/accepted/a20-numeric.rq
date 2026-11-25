@@ -1,0 +1,1 @@
+SELECT ?v WHERE { VALUES ?x { 1 2.5 -3 4e0 } BIND (ABS(ROUND(?x * 2 - 1) / 2) AS ?v) } ORDER BY ?v

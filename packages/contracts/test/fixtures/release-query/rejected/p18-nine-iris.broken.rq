@@ -1,0 +1,1 @@
+SELECT * { ?s <urn:p0>/<urn:p1>/<urn:p2>/<urn:p3>/<urn:p4>/<urn:p5>/<urn:p6>/<urn:p7>/<urn:p8> ?o }

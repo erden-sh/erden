@@ -1,0 +1,3 @@
+# a query
+sElEcT ?s # projected
+wHeRe { ?s a ?t . } # done

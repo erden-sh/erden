@@ -1,0 +1,2 @@
+PREFIX ex: <urn:x:>
+SELECT * { ?s ex:a%20b ?o }

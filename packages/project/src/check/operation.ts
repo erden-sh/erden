@@ -95,6 +95,13 @@ import {
 } from '../project-dependency-state/index.js';
 import type { ProjectLockInspection } from '../project-lock/index.js';
 import {
+    disabledEntailmentCache,
+    entailedCacheEntry,
+    nodeEntailmentCache,
+    entailmentCacheKey,
+    type EntailmentCachePort,
+} from '../query/entailment-cache.js';
+import {
     InstalledClosureReader,
     nodeInstalledClosureReader,
     type AuthenticatedInstalledFile,
@@ -209,7 +216,8 @@ function sourceId(project: CheckSourceProject, stage: string, index: number): st
         : `${project.idNamespace}:${stage}:${String(index).padStart(4, '0')}`;
 }
 
-function sourceLocationsForProject(project: CheckSourceProject) {
+/** Shared with the local query operation. */
+export function sourceLocationsForProject(project: CheckSourceProject) {
     return {
         ontology: project.loaded.resolvedSources.ontology.map((locator, index) => ({
             idPrefix: sourceId(project, 'ontology', index),
@@ -400,7 +408,8 @@ function outsideProfileDiagnostics(
         : listed;
 }
 
-function ontologyError(
+/** Shared with the local query operation. */
+export function ontologyError(
     cause: OntologyServiceError | ReasonerServiceError,
     stage: 'sources' | 'reasoning' | 'validation',
     projectRoot: string,
@@ -489,7 +498,8 @@ function dependencyError(
     );
 }
 
-function currentToolchainError(cause: CurrentToolchainError): CheckProjectOperationalError {
+/** Shared with the local query operation. */
+export function currentToolchainError(cause: CurrentToolchainError): CheckProjectOperationalError {
     const refused = cause.refusedRuntime;
     if (refused !== undefined) {
         return dependencyError(
@@ -603,7 +613,8 @@ function safeManifestCandidates(input: unknown): ReadonlyArray<CheckProjectError
     }));
 }
 
-function projectLockError(cause: unknown): CheckProjectOperationalError {
+/** Shared with the local query operation. */
+export function projectLockError(cause: unknown): CheckProjectOperationalError {
     if (!isProjectDependencyStateError(cause)) {
         return dependencyError(
             'CHECK_LOCK_INVALID',
@@ -691,7 +702,8 @@ function projectLockError(cause: unknown): CheckProjectOperationalError {
     );
 }
 
-function installError(cause: LocalPackageStoreError): CheckProjectOperationalError {
+/** Shared with the local query operation. */
+export function installError(cause: LocalPackageStoreError): CheckProjectOperationalError {
     return dependencyError(
         cause.code === 'INSTALL_MISSING'
             ? 'CHECK_INSTALL_MISSING'
@@ -727,7 +739,8 @@ function describeToolchainChange(locked: LockToolchain, current: LockToolchain):
         : changes.join('; ');
 }
 
-function requireAvailableLock(
+/** Shared with the local query operation. */
+export function requireAvailableLock(
     inspection: ProjectLockInspection,
     subject: 'root' | 'dependency',
     toolchain: LockToolchain,
@@ -2167,6 +2180,8 @@ export interface CheckProjectSemanticKernelInput {
     readonly toolchain: LockToolchain;
     /** Phase timing for measurement; absent, nothing is timed. */
     readonly timer?: CheckPhaseTimer;
+    /** Where the outcome of reasoning is kept for `erden query`; absent, nothing is kept. */
+    readonly entailmentCache?: EntailmentCachePort;
 }
 
 /** Shared semantic kernel used after an adapter has captured and authenticated exact source bytes. */
@@ -2182,6 +2197,7 @@ export function runCheckProjectSemanticKernel(
         limits,
         toolchain,
         timer,
+        entailmentCache = disabledEntailmentCache,
     }: CheckProjectSemanticKernelInput,
     capture?: (
         graph: ReasonedOntology,
@@ -2238,8 +2254,22 @@ export function runCheckProjectSemanticKernel(
                     ? reasoned.decision.normalization.partition
                     : (reasoned.cause.context.partition ?? partitionForBundledReasoner(graph)),
         };
+        function keepUnavailable(cause: string): void {
+            entailmentCache.write(
+                Object.freeze({
+                    schema: 'erden.entailment-cache/v1',
+                    key: entailmentCacheKey(toolchain.reasoner, graph),
+                    outcome: 'unavailable',
+                    limits,
+                    cause,
+                }),
+            );
+        }
         if (reasoned._tag === 'Negative') {
             const context = reasoned.cause.context;
+            if (context.outcome === 'refused') {
+                keepUnavailable(context.reason);
+            }
             return yield* constructReport('reasoning', () =>
                 failedReasoningReport(
                     loaded,
@@ -2270,6 +2300,7 @@ export function runCheckProjectSemanticKernel(
         }
         const decision = reasoned.decision;
         if (decision.response.result.consistency === 'inconsistent') {
+            keepUnavailable('global-inconsistency');
             return yield* constructReport('reasoning', () =>
                 failedReasoningReport(
                     loaded,
@@ -2296,6 +2327,7 @@ export function runCheckProjectSemanticKernel(
             );
         }
         if (decision.response.result.diagnostics.some((item) => item.severity === 'error')) {
+            keepUnavailable('reasoner-error-diagnostic');
             return yield* constructReport('reasoning', () =>
                 failedReasoningReport(
                     loaded,
@@ -2328,6 +2360,13 @@ export function runCheckProjectSemanticKernel(
                 new TypeError('A consistent decision without error diagnostics was not materialized'),
             );
         }
+        entailmentCache.write(
+            entailedCacheEntry(
+                entailmentCacheKey(toolchain.reasoner, graph),
+                materialized,
+                decision.normalization.partition.excludedKeys.size,
+            ),
+        );
         // Normalization's partition, when it is the one core validation applies, so it is computed once.
         const profilePartition = bundledPartitionOf(decision.normalization);
         const validation = yield* ontologyService
@@ -2373,9 +2412,11 @@ function runCheckProject(
     projectStateService: Pick<ProjectDependencyStateServiceShape, 'inspect' | 'recheck'>,
     currentToolchainService: Context.Service.Shape<typeof CurrentToolchain>,
     installedClosureReader: InstalledClosureReaderShape,
+    entailmentCache: EntailmentCachePort = disabledEntailmentCache,
 ): Effect.Effect<CheckProjectReport, CheckProjectError> {
     return Effect.gen(function* () {
-        // CheckProject is read-only and has no registry/network capability; offline cannot affect report bytes.
+        // CheckProject reads the project and has no registry/network capability; offline cannot affect report bytes. It
+        // writes nothing but the entailment cache, which only `erden query` reads.
         void options.offline;
         const toolchain = yield* currentToolchainService.inspect().pipe(Effect.mapError(currentToolchainError));
         const state = yield* projectStateService
@@ -2448,6 +2489,7 @@ function runCheckProject(
                 reasonerService,
                 limits: options.reasonerLimits ?? DEFAULT_REASONER_LIMITS,
                 toolchain,
+                entailmentCache,
                 ...(options.timer === undefined ? {} : { timer: options.timer }),
             });
         });
@@ -2525,6 +2567,7 @@ export function makeCheckProjectService(
     projectState: Pick<ProjectDependencyStateServiceShape, 'inspect' | 'recheck'> = nodeProjectDependencyStateService,
     currentToolchain: Context.Service.Shape<typeof CurrentToolchain> = nodeCurrentToolchainService,
     installedClosureReader: InstalledClosureReaderShape = nodeInstalledClosureReader,
+    entailmentCache: EntailmentCachePort = disabledEntailmentCache,
 ): CheckProjectServiceShape {
     return Object.freeze({
         check: (options = {}) =>
@@ -2536,6 +2579,7 @@ export function makeCheckProjectService(
                 projectState,
                 currentToolchain,
                 installedClosureReader,
+                entailmentCache,
             ),
     });
 }
@@ -2547,4 +2591,5 @@ export const nodeCheckProjectService = makeCheckProjectService(
     nodeProjectDependencyStateService,
     nodeCurrentToolchainService,
     nodeInstalledClosureReader,
+    nodeEntailmentCache(),
 );

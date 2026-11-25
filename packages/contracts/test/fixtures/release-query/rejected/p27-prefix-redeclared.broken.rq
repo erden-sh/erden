@@ -1,0 +1,3 @@
+PREFIX ex: <urn:a:>
+PREFIX ex: <urn:b:>
+SELECT * { }

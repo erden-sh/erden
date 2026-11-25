@@ -1,5 +1,6 @@
 export * from './manifest/index.js';
 export * from './check/index.js';
+export * from './query/index.js';
 export * from './init/index.js';
 export * from './doctor/index.js';
 export * from './dependencies/index.js';

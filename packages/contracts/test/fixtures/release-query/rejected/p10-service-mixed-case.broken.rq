@@ -1,0 +1,1 @@
+SELECT * { ?s ?p ?o . sErViCe <http://x.test/> { ?a ?b ?c } }

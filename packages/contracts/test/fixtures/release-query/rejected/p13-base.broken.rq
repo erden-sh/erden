@@ -1,0 +1,2 @@
+BASE <http://x.test/>
+SELECT * { ?s ?p ?o }

@@ -30,6 +30,7 @@ import {
 } from '@erden/contracts';
 import { DEFAULT_REGISTRY_ORIGIN, loadManifest } from '@erden/project';
 
+import { parseLocalQueryArguments, runLocalQueryCommand, type CliLocalQueryRuntime } from './local-query.js';
 import {
     CliRegistryUsageError,
     HTTP_CREDENTIAL_WARNING,
@@ -60,6 +61,37 @@ export interface CliQueryCommandContext {
     readonly stdout: CliRegistryTextSink;
     readonly stderr: CliRegistryTextSink;
     readonly query?: CliQueryRuntime;
+    readonly localQuery?: CliLocalQueryRuntime;
+}
+
+const QUERY_VALUE_FLAGS = new Set(['--file', '--registry', '--config', '--regime', '--timeout']);
+
+/** Whether `input` is `<alias-or-IRI>@<version>`: a registry release, never a project directory. */
+function namesRegistryRelease(input: string): boolean {
+    if (isScopedAlias(input)) {
+        // An alias without a version: still a registry query, refused as one, never a directory named like an alias.
+        return true;
+    }
+    for (let index = input.lastIndexOf('@'); index > 0; index = input.lastIndexOf('@', index - 1)) {
+        const identifier = input.slice(0, index);
+        if (isScopedAlias(identifier) || isCanonicalOntologyIri(identifier)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** The first positional argument: a registry release keeps today's behavior; anything else is a project. */
+function queriesRegistryRelease(arguments_: ReadonlyArray<string>): boolean {
+    for (let index = 0; index < arguments_.length; index += 1) {
+        const argument = arguments_[index] as string;
+        if (QUERY_VALUE_FLAGS.has(argument)) {
+            index += 1;
+        } else if (!argument.startsWith('-')) {
+            return namesRegistryRelease(argument);
+        }
+    }
+    return false;
 }
 
 interface QueryArguments {
@@ -382,11 +414,22 @@ function failureCode(cause: unknown, signal: AbortSignal): string {
     return 'CLI_QUERY_FAILED';
 }
 
-/** `erden query`: one bounded read-only query over one exact registry release. Query text never comes from argv. */
+/**
+ * `erden query`: one bounded read-only query over one exact registry release, or, when the first argument is not
+ * `<identifier>@<version>`, full SPARQL over the local project. Query text never comes from argv.
+ */
 export async function runQueryCommand(
     arguments_: ReadonlyArray<string>,
     context: CliQueryCommandContext,
 ): Promise<number> {
+    if (!queriesRegistryRelease(arguments_)) {
+        const local = parseLocalQueryArguments(arguments_);
+        if (context.localQuery === undefined) {
+            context.stderr.write('Erden query could not complete [CLI_QUERY_FAILED]\n');
+            return 3;
+        }
+        return await runLocalQueryCommand(local, context, context.localQuery);
+    }
     const options = parseQueryArguments(arguments_);
     const runtime = context.query;
     if (runtime === undefined) {

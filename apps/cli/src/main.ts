@@ -48,6 +48,9 @@ import {
     encodeStoreStatusReport,
     encodeStorePathReport,
     nodeCheckProjectService,
+    nodeQueryProjectService,
+    runLocalQuery,
+    type QueryProjectServiceShape,
     nodeDoctorService,
     nodeInitProjectService,
     makeNodeInstallProjectServiceFromReleaseIndex,
@@ -99,7 +102,14 @@ import {
 
 import { COMPLETION_SHELLS, completionScript } from './completions.js';
 import { cliUserAgent, cliVersion, nodeInstallation, stateDirectory, type Installation } from './installation.js';
-import { nodeCliQueryRuntime, runQueryCommand, type CliQueryRuntime } from './query.js';
+import type { CliLocalQueryRuntime } from './local-query.js';
+import {
+    nodeCliQueryRuntime,
+    readCliQueryFile,
+    readCliQueryStdin,
+    runQueryCommand,
+    type CliQueryRuntime,
+} from './query.js';
 import {
     CliRegistryUsageError,
     REGISTRY_ORIGIN_USAGE,
@@ -136,6 +146,7 @@ import {
 
 export type { CliPublicationRuntime } from './registry.js';
 export type { CliQueryRuntime } from './query.js';
+export type { CliLocalQueryRuntime } from './local-query.js';
 export type { CliUpgradeRuntime } from './upgrade.js';
 
 export const CLI_EXIT = Object.freeze({
@@ -143,6 +154,8 @@ export const CLI_EXIT = Object.freeze({
     semanticFailure: 1,
     usage: 2,
     operational: 3,
+    /** An answer that is labeled partial: some of what it should cover was unavailable (`erden query`). */
+    partial: 4,
 } as const);
 
 export const CLI_HELP = `Erden CLI: check, package, and publish ontologies (also available as den)
@@ -157,6 +170,7 @@ Usage:
   erden pack <version> [project-dir] [--config <file>] [--output <file>] [--json]
   erden publish <version> [project-dir] [--config <file>] [--output <file>] [--create [--visibility public|private] [--yes]] [--no-wait] [--json]
   erden publication <attempt-id> [--registry <origin>] [--wait] [--report] [--json]
+  erden query [project-dir] (--file <path> | --stdin) [--config <file>] [--regime <asserted|entailed>] [--json | --sparql-json | --csv | --tsv] [--timeout <seconds>] [--allow-incomplete] [--registry-compatible] [--offline]
   erden query <identifier>@<version> (--file <path> | --stdin) [--registry <origin>] [--json | --sparql-json]
   erden path <layer> [--config <file>] [--json]
   erden store path [--json]
@@ -179,6 +193,14 @@ Registry: https://registry.erden.sh, unless --registry or the nearest project's 
 Package output (pack, publish):
   --output <file> must name a file ending in .erdenpkg outside the project directory; its folder may hold any number
   of other files. Without it, pack writes <scope>-<name>-<version>.erdenpkg to the folder that holds the project.
+
+Local query:
+  erden query [project-dir] runs full SPARQL 1.1 (no SERVICE, no updates) over the project and its installed
+  dependencies, on this machine. Answers are entailed (what the files imply under Erden's reasoner) when the
+  project's reasoning succeeds, else asserted (what the files say), and always say which, and whether anything was
+  left out. Exit codes: 0 answered and complete, 1 query refused, 2 usage, 3 could not complete, 4 answered but
+  partial (--allow-incomplete makes it 0). A query the registry's query language refuses gets a warning;
+  --registry-compatible refuses it instead. Inferences are cached in ~/.cache/erden (XDG_CACHE_HOME).
 
 Registry transport:
   Add, install, login, logout, publish, publication status, and query use one origin-scoped credential when present.
@@ -220,6 +242,7 @@ export interface CliRuntime {
     readonly authentication?: CliAuthenticationRuntime;
     readonly publication?: CliPublicationRuntime;
     readonly query?: CliQueryRuntime;
+    readonly localQuery?: QueryProjectServiceShape;
     /** The process environment; only the documented `ERDEN_REASONER_MAX_*` settings are read from it. */
     readonly environment?: () => Readonly<Record<string, string | undefined>>;
     readonly telemetry?: CliTelemetryRuntime;
@@ -344,6 +367,7 @@ export const nodeCliRuntime: CliRuntime = Object.freeze({
     }),
     publication: nodeCliPublicationRuntime,
     query: nodeCliQueryRuntime,
+    localQuery: nodeQueryProjectService,
     environment: () => process.env,
     get telemetry() {
         return nodeTelemetryRuntime();
@@ -1330,11 +1354,23 @@ export async function runCli(arguments_: ReadonlyArray<string>, runtime: CliRunt
             });
         }
         if (command === 'query') {
+            const project = runtime.localQuery;
+            const localQuery: CliLocalQueryRuntime | undefined =
+                project === undefined
+                    ? undefined
+                    : {
+                          project,
+                          run: runLocalQuery,
+                          readFile: runtime.query?.readFile ?? readCliQueryFile,
+                          readStdin: runtime.query?.readStdin ?? readCliQueryStdin,
+                          reasonerLimits: () => reasonerLimits(runtime),
+                      };
             return await runQueryCommand(arguments_.slice(1), {
                 cwd: runtime.cwd,
                 stdout: runtime.stdout,
                 stderr: runtime.stderr,
                 ...(runtime.query === undefined ? {} : { query: runtime.query }),
+                ...(localQuery === undefined ? {} : { localQuery }),
             });
         }
         if (command === 'path') {

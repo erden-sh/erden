@@ -1,0 +1,4 @@
+PREFIX ex: <https://example.test/onto#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+SELECT ?x WHERE { VALUES ?x { 1 2 3 } FILTER (<http://www.w3.org/2001/XMLSchema#integer>(STR(?x)) IN (1, 3)) } ORDER BY ?x
