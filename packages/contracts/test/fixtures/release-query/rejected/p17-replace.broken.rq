@@ -1,0 +1,1 @@
+SELECT * { ?s ?p ?o BIND (REPLACE(STR(?o), "a", "b") AS ?x) }

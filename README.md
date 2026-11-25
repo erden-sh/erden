@@ -8,18 +8,18 @@ The local tools in this repository are Apache-2.0 (see [LICENSE](/LICENSE)). The
 
 ## What is here
 
-| Path                       | What it is                                                               |
-| -------------------------- | ------------------------------------------------------------------------ |
-| `apps/cli/`                | the `erden` CLI: `init`, `check`, `install`, `pack`, `publish`, `doctor` |
-| `packages/client/`         | registry client: upload, download, reads                                 |
-| `packages/contracts/`      | manifest, lockfile, check report and registry wire formats               |
-| `packages/project/`        | local project operations: check, install, pack, the package store        |
-| `packages/ontology/`       | local assembly, SHACL, competency questions                              |
-| `packages/package-format/` | the package archive format                                               |
-| `reasoner/`                | the reasoner's Rust source, qualification, protocol and resolver         |
-| `shacl/`                   | the `erden-shacl` engine's Rust source, qualification and resolver       |
-| `workers/`                 | the Cloudflare Workers behind erden.sh/install, downloads and telemetry  |
-| `docs/`                    | public documentation, including what telemetry collects                  |
+| Path                       | What it is                                                                        |
+| -------------------------- | --------------------------------------------------------------------------------- |
+| `apps/cli/`                | the `erden` CLI: `init`, `check`, `query`, `install`, `pack`, `publish`, `doctor` |
+| `packages/client/`         | registry client: upload, download, reads                                          |
+| `packages/contracts/`      | manifest, lockfile, check report and registry wire formats                        |
+| `packages/project/`        | local project operations: check, install, pack, the package store                 |
+| `packages/ontology/`       | local assembly, SHACL, competency questions                                       |
+| `packages/package-format/` | the package archive format                                                        |
+| `reasoner/`                | the reasoner's Rust source, qualification, protocol and resolver                  |
+| `shacl/`                   | the `erden-shacl` engine's Rust source, qualification and resolver                |
+| `workers/`                 | the Cloudflare Workers behind erden.sh/install, downloads and telemetry           |
+| `docs/`                    | public documentation: local query and its exit codes, what telemetry collects     |
 
 The engine binaries are never committed. A release ships them inside the CLI archive; a checkout builds them from
 source.

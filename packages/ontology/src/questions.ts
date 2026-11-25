@@ -171,7 +171,8 @@ function oxigraphTerm<T extends Term>(term: T): T {
     return (term.termType === 'BlankNode' ? DataFactory.blankNode(oxigraphBlankNodeLabel(term.value)) : term) as T;
 }
 
-function oxigraphQuad(quad: Quad): Quad {
+/** A quad as Oxigraph receives it: assembled blank-node labels made valid, deterministic identifiers. */
+export function oxigraphQuad(quad: Quad): Quad {
     if (quad.subject.termType !== 'BlankNode' && quad.object.termType !== 'BlankNode') {
         return quad;
     }

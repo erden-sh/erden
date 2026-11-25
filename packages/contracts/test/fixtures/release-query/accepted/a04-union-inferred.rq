@@ -1,0 +1,4 @@
+PREFIX ex: <https://example.test/onto#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+SELECT ?c ?s WHERE { { ?c rdfs:subClassOf ?s } UNION { GRAPH <urn:erden:release-query:v1:graph:inferred> { ?c rdfs:subClassOf ?s } } } ORDER BY ?c ?s

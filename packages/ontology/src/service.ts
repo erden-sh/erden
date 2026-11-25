@@ -1,6 +1,12 @@
 import { Context, Effect } from 'effect';
 
-import { assembleOntology, type AssembleOntologyError, type OntologyAssemblyLimits } from './assembly.js';
+import {
+    assembleOntology,
+    assembleOntologyTolerant,
+    type AssembleOntologyError,
+    type OntologyAssemblyLimits,
+    type UnparsedOntologySource,
+} from './assembly.js';
 import { validateCitations } from './citations.js';
 import { validateCoreOntology } from './core-validation.js';
 import { discoverCompetencyQuestions, discoverShapeSources, discoverTurtleSources } from './discovery.js';
@@ -57,6 +63,17 @@ export interface OntologyServiceShape {
         sources: ReadonlyArray<ByteBackedTurtleSource>,
         limits?: OntologyAssemblyLimits,
     ) => Effect.Effect<AssembledOntology, OntologyServiceError>;
+    /**
+     * Assembles the sources that decode and parse and lists the rest instead of failing, for answers over a broken
+     * project. The graph may be handed to the reasoner as `assembleByteBacked`'s is.
+     */
+    readonly assembleByteBackedTolerant: (
+        sources: ReadonlyArray<ByteBackedTurtleSource>,
+        limits?: OntologyAssemblyLimits,
+    ) => Effect.Effect<
+        Readonly<{ graph: AssembledOntology; unparsed: ReadonlyArray<UnparsedOntologySource> }>,
+        OntologyServiceError
+    >;
     readonly loadByteBackedShapes: (
         sources: ReadonlyArray<ByteBackedShapeSource>,
     ) => Effect.Effect<ReadonlyArray<LoadedShapeSource>, OntologyServiceError>;
@@ -254,6 +271,14 @@ export function makeOntologyService(ports: OntologyPorts): OntologyServiceShape 
                 sources.map(({ descriptor }) => descriptor),
                 limits,
             ).pipe(Effect.map(offerAssembledOntology)),
+        assembleByteBackedTolerant: (sources, limits) =>
+            assembleOntologyTolerant(
+                byteBackedResources(sources.map(({ descriptor, bytes }) => ({ locator: descriptor.locator, bytes }))),
+                sources.map(({ descriptor }) => descriptor),
+                limits,
+            ).pipe(
+                Effect.map(({ graph, unparsed }) => Object.freeze({ graph: offerAssembledOntology(graph), unparsed })),
+            ),
         loadByteBackedShapes: (sources) =>
             discoverShapeSources(
                 byteBackedResources(sources.map(({ descriptor, bytes }) => ({ locator: descriptor.locator, bytes }))),

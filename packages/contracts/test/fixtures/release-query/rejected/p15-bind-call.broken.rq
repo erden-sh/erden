@@ -1,0 +1,1 @@
+SELECT * { BIND (<urn:f>() AS ?x) }

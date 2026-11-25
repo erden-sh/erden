@@ -1,0 +1,1 @@
+SELECT * { BIND (<< <urn:a> <urn:b> <urn:c> >> AS ?t) }

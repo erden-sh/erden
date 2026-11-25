@@ -1,0 +1,2 @@
+SELECT ?s WHERE { ?s ?p """multi
+line "quoted" text""" }

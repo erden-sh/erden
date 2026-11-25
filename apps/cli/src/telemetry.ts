@@ -243,6 +243,8 @@ export function telemetryCommandName(arguments_: ReadonlyArray<string>): Telemet
 export function telemetryOutcome(exitCode: number | undefined): TelemetryOutcome {
     switch (exitCode) {
         case 0:
+        // 4 is an answer labeled partial (`erden query`): the command did its job and said what was missing.
+        case 4:
             return 'success';
         case 1:
             return 'failure';

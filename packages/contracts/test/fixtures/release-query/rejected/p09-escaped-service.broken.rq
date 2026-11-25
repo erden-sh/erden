@@ -1,0 +1,1 @@
+SELECT * { \u0053ERVICE <http://x.test/> { ?s ?p ?o } }

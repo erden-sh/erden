@@ -1,0 +1,2 @@
+PREFIX : <https://example.test/onto#>
+SELECT ?s WHERE { ?s a :A }

@@ -1,0 +1,4 @@
+PREFIX ex: <https://example.test/onto#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+SELECT ?c ?n WHERE { ?c rdfs:label ?l . BIND (IF(STRLEN(STR(?l)) > 3, UCASE(STR(?l)), LCASE(STR(?l))) AS ?n) FILTER (isLITERAL(?l) && LANGMATCHES(LANG(?l), "*") || !isBLANK(?c)) } ORDER BY ?c ?n

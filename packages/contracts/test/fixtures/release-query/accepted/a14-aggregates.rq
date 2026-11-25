@@ -1,0 +1,4 @@
+PREFIX ex: <https://example.test/onto#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+SELECT ?c (COUNT(DISTINCT ?l) AS ?labels) (SAMPLE(?l) AS ?one) (GROUP_CONCAT(?l ; SEPARATOR = "|") AS ?all) WHERE { ?c rdfs:label ?l } GROUP BY ?c HAVING (COUNT(?l) >= 1) ORDER BY ?c

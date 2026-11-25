@@ -1,0 +1,1 @@
+SELECT ?v WHERE { OPTIONAL { ?s <urn:x> ?y } BIND (COALESCE(?y, "none") AS ?v) }

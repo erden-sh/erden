@@ -12,6 +12,7 @@ export const RUNTIME_DIST_FILES = new Map([
             ...emittedPair('completions'),
             ...emittedPair('index'),
             ...emittedPair('installation'),
+            ...emittedPair('local-query'),
             ...emittedPair('main'),
             ...emittedPair('query'),
             ...emittedPair('registry'),
@@ -56,7 +57,9 @@ export const RUNTIME_DIST_FILES = new Map([
             ...['errors', 'identity', 'index', 'model', 'shape'].flatMap((name) =>
                 emittedPair(`release-comparison/${name}`),
             ),
-            ...['errors', 'index', 'model', 'result', 'wire'].flatMap((name) => emittedPair(`release-query/${name}`)),
+            ...['canonical', 'errors', 'index', 'lexer', 'model', 'parser', 'result', 'wire'].flatMap((name) =>
+                emittedPair(`release-query/${name}`),
+            ),
         ],
     ],
     [
@@ -87,6 +90,7 @@ export const RUNTIME_DIST_FILES = new Map([
             ...['errors', 'index', 'operation', 'render', 'report'].flatMap((name) =>
                 emittedPair(`project-path/${name}`),
             ),
+            ...['entailment-cache', 'index', 'operation'].flatMap((name) => emittedPair(`query/${name}`)),
             ...['errors', 'filesystem', 'index', 'marker', 'model', 'operation'].flatMap((name) =>
                 emittedPair(`store/${name}`),
             ),
@@ -122,6 +126,7 @@ export const RUNTIME_DIST_FILES = new Map([
                 emittedPair(`comparison-rdf/${name}`),
             ),
             ...['engine', 'index', 'model', 'worker'].flatMap((name) => emittedPair(`release-query/${name}`)),
+            ...['dataset', 'engine', 'index', 'scan', 'worker'].flatMap((name) => emittedPair(`local-query/${name}`)),
             ...['formats', 'graph-hash', 'index', 'jsonld-guard', 'parse', 'positions', 'rdfxml-guard'].flatMap(
                 (name) => emittedPair(`source-formats/${name}`),
             ),

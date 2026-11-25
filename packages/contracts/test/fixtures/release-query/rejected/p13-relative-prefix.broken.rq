@@ -1,0 +1,2 @@
+PREFIX ex: <path/>
+SELECT * { ?s ex:p ?o }

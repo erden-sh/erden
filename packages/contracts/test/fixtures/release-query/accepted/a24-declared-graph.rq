@@ -1,0 +1,1 @@
+SELECT ?s WHERE { GRAPH <urn:erden:release-query:v1:graph:declared> { ?s ?p ?o } } ORDER BY ?s LIMIT 10

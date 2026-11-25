@@ -17,16 +17,16 @@ the queue.
 
 ### What one event holds
 
-| Field        | Example                                | What it is                                                                                   |
-| ------------ | -------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `installId`  | `3b241101-e2bb-4255-8caf-4136c566a962` | a random ID (UUID v4) made on your machine on the first run; it is not derived from anything |
-| `command`    | `check`, `store status`                | the command's name, from a fixed list; anything else is sent as `unknown`                    |
-| `outcome`    | `success`                              | `success`, `failure`, `usage-error`, `operational-error` or `crash`, from the exit code      |
-| `durationMs` | `812`                                  | how long the command took, in whole milliseconds                                             |
-| `version`    | `0.1.0`                                | the CLI's version                                                                            |
-| `channel`    | `stable`                               | `stable` or `canary`                                                                         |
-| `os`         | `linux`                                | `linux`, `darwin` or `win32`                                                                 |
-| `arch`       | `x64`                                  | `x64` or `arm64`                                                                             |
+| Field        | Example                                | What it is                                                                                                                       |
+| ------------ | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `installId`  | `3b241101-e2bb-4255-8caf-4136c566a962` | a random ID (UUID v4) made on your machine on the first run; it is not derived from anything                                     |
+| `command`    | `check`, `store status`                | the command's name, from a fixed list; anything else is sent as `unknown`                                                        |
+| `outcome`    | `success`                              | `success`, `failure`, `usage-error`, `operational-error` or `crash`, from the exit code (a partial answer, exit 4, is `success`) |
+| `durationMs` | `812`                                  | how long the command took, in whole milliseconds                                                                                 |
+| `version`    | `0.1.0`                                | the CLI's version                                                                                                                |
+| `channel`    | `stable`                               | `stable` or `canary`                                                                                                             |
+| `os`         | `linux`                                | `linux`, `darwin` or `win32`                                                                                                     |
+| `arch`       | `x64`                                  | `x64` or `arm64`                                                                                                                 |
 
 That is the whole event (plus a `schema` field naming its format). It **never** includes file or directory paths,
 project or package names, aliases, IRIs, command arguments or flags, query text, registry addresses, error messages,

@@ -1,0 +1,1 @@
+SELECT (IRI("http://x.test/") AS ?i) { }

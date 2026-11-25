@@ -1,0 +1,4 @@
+PREFIX ex: <https://example.test/onto#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+SELECT ?c ?l WHERE { ?c rdfs:label ?l FILTER (REGEX(STR(?l), "^class", "i")) } ORDER BY ?c
