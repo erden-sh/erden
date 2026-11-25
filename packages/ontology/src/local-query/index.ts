@@ -1,5 +1,8 @@
 export {
     runLocalQuery,
+    runLocalQueries,
+    type LocalQueryEngineBatch,
+    type LocalQueryEngineQuery,
     type LocalQueryEngineFormat,
     type LocalQueryEngineInput,
     type LocalQueryEngineResult,

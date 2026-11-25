@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -5,7 +6,13 @@ import { Effect } from 'effect';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CheckProjectOperationalError } from '@erden/contracts';
-import type { PreparedProjectQuery, QueryProjectOptions, QueryProjectServiceShape } from '@erden/project';
+import {
+    parseCompetencyQuestionMetadata,
+    type LoadedCompetencyQuestion,
+    type PreparedProjectQuery,
+    type QueryProjectOptions,
+    type QueryProjectServiceShape,
+} from '@erden/project';
 
 import { cleanupTestTempRoot, makeTestTempRoot } from '../../../scripts/lib/test-temp-root.mjs';
 import { CLI_EXIT, runCli, type CliRuntime, type CliServices } from '../src/main.js';
@@ -40,11 +47,14 @@ function prepared(overrides: Partial<PreparedProjectQuery> = {}): PreparedProjec
         },
         entailedUnavailable: false,
         reasons: [],
+        questions: [],
+        unknownQuestions: [],
         dataset: {
             nquads: `${lines.join('\n')}\n`,
             defaultGraph: [DECLARED, INFERRED],
             namedGraphs: [DECLARED, INFERRED],
             quadCounts: { declared: 1, inferred: 1 },
+            sourceGraphs: [],
         },
         ...overrides,
     };
@@ -65,6 +75,7 @@ const PARTIAL: Partial<PreparedProjectQuery> = {
         defaultGraph: [DECLARED],
         namedGraphs: [DECLARED],
         quadCounts: { declared: 1, inferred: 0 },
+        sourceGraphs: [],
     },
 };
 
@@ -265,5 +276,113 @@ describe('erden query [project-dir]', () => {
         const run = harness(ANIMALS);
         expect(await runCli(arguments_, run.runtime)).toBe(CLI_EXIT.usage);
         expect(run.requests).toEqual([]);
+    });
+
+    describe('--questions', () => {
+        function loaded(root: string, name: string, text: string): LoadedCompetencyQuestion {
+            const bytes = new TextEncoder().encode(text);
+            writeFileSync(join(root, name), text);
+            const parsed = parseCompetencyQuestionMetadata(text);
+            return {
+                id: `root:competency-questions:${name}`,
+                owner: { canonicalIri: 'https://example.test/root', role: 'root', ownedIriPrefixes: [] },
+                locator: join(root, name),
+                contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+                bytes,
+                text,
+                placeholders: {},
+                metadata: parsed.metadata,
+                diagnostics: parsed.diagnostics,
+            };
+        }
+        function head(expect: string, regime = ''): string {
+            return `# @ask     Q?\n# @expect  ${expect}\n# @from    test\n${regime === '' ? '' : `# @regime  ${regime}\n`}`;
+        }
+
+        function questionsHarness(
+            texts: ReadonlyArray<readonly [string, string]>,
+            overrides: Partial<PreparedProjectQuery> = {},
+        ) {
+            const run = harness(ANIMALS);
+            const root = run.runtime.cwd();
+            const questions = texts.map(([name, text]) => loaded(root, name, text));
+            const answer = prepared({ ...overrides, projectRoot: root, questions });
+            const runtime: CliRuntime = {
+                ...run.runtime,
+                localQuery: {
+                    prepare: (options = {}) => {
+                        run.requests.push(options);
+                        return Effect.succeed(answer);
+                    },
+                },
+            };
+            return { ...run, runtime, root };
+        }
+
+        it('runs each question under its regime and exits 0 when all are met and complete', async () => {
+            const run = questionsHarness([
+                ['a.rq', `${head('rows == 1')}${ANIMALS}`],
+                ['b.rq', `${head('rows == 0', 'asserted')}${ANIMALS}`],
+                ['c.rq', `${head('results c.srj')}${ANIMALS}`],
+            ]);
+            writeFileSync(
+                join(run.root, 'c.srj'),
+                JSON.stringify({
+                    head: { vars: ['x'] },
+                    results: { bindings: [{ x: { type: 'uri', value: 'https://example.test/root#rex' } }] },
+                }),
+            );
+            expect(await runCli(['query', '--questions'], run.runtime)).toBe(0);
+            const out = run.stdout.join('');
+            expect(out).toContain('met              a.rq: 1 rows, expected == 1 [entailed]');
+            expect(out).toContain('met              b.rq: 0 rows, expected == 0 [asserted]');
+            expect(out).toContain('met              c.rq: results match: 1 rows, c.srj [entailed]');
+            expect(out).toContain('3 questions: 3 met, 0 failed, 0 partial');
+            expect(run.requests[0]).toMatchObject({ questions: 'all' });
+        });
+
+        it('exits 1 when a question fails, and 4 when all are met but one is partial', async () => {
+            const failing = questionsHarness([['a.rq', `${head('rows == 0')}${ANIMALS}`]]);
+            expect(
+                await runCli(['query', '--questions', 'a.rq', 'root:competency-questions:a.rq'], failing.runtime),
+            ).toBe(CLI_EXIT.semanticFailure);
+            expect(failing.stdout.join('')).toContain('FAILED           a.rq: 1 rows, expected == 0');
+            expect(failing.requests[0]).toMatchObject({
+                questions: [
+                    { name: 'a.rq', path: join(failing.root, 'a.rq') },
+                    {
+                        name: 'root:competency-questions:a.rq',
+                        path: join(failing.root, 'root:competency-questions:a.rq'),
+                    },
+                ],
+            });
+            const partial = questionsHarness([['a.rq', `${head('rows == 0')}${ANIMALS}`]], PARTIAL);
+            expect(await runCli(['query', '--questions', '--json'], partial.runtime)).toBe(CLI_EXIT.partial);
+            const envelope = JSON.parse(partial.stdout.join('')) as { schema: string; questions: unknown[] };
+            expect(envelope).toMatchObject({
+                schema: 'erden.local-questions-result/v1',
+                summary: { questions: 1, met: 1, failed: 0, incomplete: 1 },
+                questions: [
+                    {
+                        file: 'a.rq',
+                        regime: 'asserted',
+                        ok: true,
+                        completeness: { complete: false, reasons: PARTIAL.reasons },
+                    },
+                ],
+            });
+        });
+
+        it('refuses an unknown question and a results output as usage errors', async () => {
+            const unknown = questionsHarness([]);
+            const answer = prepared({ unknownQuestions: ['nope'] });
+            const runtime: CliRuntime = {
+                ...unknown.runtime,
+                localQuery: { prepare: () => Effect.succeed(answer) },
+            };
+            expect(await runCli(['query', '--questions', 'nope'], runtime)).toBe(CLI_EXIT.usage);
+            expect(await runCli(['query', '--questions', '--csv'], unknown.runtime)).toBe(CLI_EXIT.usage);
+            expect(await runCli(['query', '--questions', '--file', 'q.rq'], unknown.runtime)).toBe(CLI_EXIT.usage);
+        });
     });
 });

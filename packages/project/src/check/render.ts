@@ -243,6 +243,20 @@ export function renderCheckProjectReport(report: CheckProjectReport): string {
         }
     }
     lines.push(...unreasonedLines(report));
+    const advisory = report.advisoryCompetencyQuestions;
+    if (advisory !== undefined) {
+        lines.push(
+            '',
+            `Competency questions (advisory: reasoning did not complete [${terminalText(advisory.entailmentUnavailable)}], so they ran over the asserted statements only; the verdict above does not count them):`,
+        );
+        for (const question of advisory.questions) {
+            if (question.execution === 'executed') {
+                lines.push(
+                    `- ${question.ok === true ? 'met' : 'not met'}: ${terminalText(question.file)}: ${terminalText(question.reason)}`,
+                );
+            }
+        }
+    }
     if (report.warnings.length > 0) {
         lines.push('', 'Warnings:');
         for (const warning of report.warnings) {

@@ -8,19 +8,30 @@ import { localQueryWorker } from './worker.js';
 /** The result serializations a local query asks Oxigraph for: W3C SPARQL 1.1 results, or N-Triples for graphs. */
 export type LocalQueryEngineFormat = 'json' | 'csv' | 'tsv' | 'ntriples';
 
-export interface LocalQueryEngineInput {
+/** One query of a batch: its text, the graphs it sees, and the serialization of its answer. */
+export interface LocalQueryEngineQuery {
+    readonly query: string;
+    /** The graphs whose union is the query's default graph (`FROM` clauses in the query take precedence). */
+    readonly defaultGraph: ReadonlyArray<string>;
+    /** The graphs `GRAPH` patterns may name (`FROM NAMED` clauses in the query take precedence). */
+    readonly namedGraphs: ReadonlyArray<string>;
+    readonly format: LocalQueryEngineFormat;
+}
+
+export interface LocalQueryEngineInput extends LocalQueryEngineQuery {
     /**
      * One N-Quads document holding every graph. It is loaded in one piece, so a blank-node label names the same node
      * in every graph it appears in.
      */
     readonly nquads: string;
-    /** The graphs whose union is the query's default graph (`FROM` clauses in the query take precedence). */
-    readonly defaultGraph: ReadonlyArray<string>;
-    /** The graphs `GRAPH` patterns may name (`FROM NAMED` clauses in the query take precedence). */
-    readonly namedGraphs: ReadonlyArray<string>;
-    readonly query: string;
-    readonly format: LocalQueryEngineFormat;
     /** The wall-time budget for loading and evaluation together. */
+    readonly milliseconds: number;
+}
+
+export interface LocalQueryEngineBatch {
+    readonly nquads: string;
+    readonly queries: ReadonlyArray<LocalQueryEngineQuery>;
+    /** The wall-time budget of each query, loading included for the first. */
     readonly milliseconds: number;
 }
 
@@ -34,21 +45,71 @@ export type LocalQueryEngineResult =
 
 const WORKER_SOURCE = `(${localQueryWorker.toString()})(specifier => import(specifier)).catch(() => process.exit(1));`;
 
-/**
- * Runs one SPARQL query over one dataset in a fresh worker thread with the pinned Oxigraph, and terminates the worker
- * when the budget runs out. Evaluation is synchronous WebAssembly, so a thread is the only way to stop it.
- */
+/** Runs one SPARQL query over one dataset; see `runLocalQueries`. */
 export async function runLocalQuery(
     input: LocalQueryEngineInput,
     signal?: AbortSignal,
 ): Promise<LocalQueryEngineResult> {
+    const [result] = await runLocalQueries(
+        {
+            nquads: input.nquads,
+            queries: [
+                {
+                    query: input.query,
+                    defaultGraph: input.defaultGraph,
+                    namedGraphs: input.namedGraphs,
+                    format: input.format,
+                },
+            ],
+            milliseconds: input.milliseconds,
+        },
+        signal,
+    );
+    return result ?? Object.freeze({ outcome: 'unavailable', message: 'the query engine gave no answer' });
+}
+
+/**
+ * Runs SPARQL queries in order over one dataset, loaded once, in a worker thread with the pinned Oxigraph. A query
+ * that runs past its budget is stopped by terminating the worker; the rest run in a fresh one. Evaluation is
+ * synchronous WebAssembly, so a thread is the only way to stop it.
+ */
+export async function runLocalQueries(
+    batch: LocalQueryEngineBatch,
+    signal?: AbortSignal,
+): Promise<ReadonlyArray<LocalQueryEngineResult>> {
     const directory = verifyReleaseQueryEngineDirectory();
     if (directory === null) {
-        return Object.freeze({ outcome: 'unavailable', message: 'the pinned Oxigraph engine is missing or altered' });
+        return batch.queries.map(() =>
+            Object.freeze({
+                outcome: 'unavailable' as const,
+                message: 'the pinned Oxigraph engine is missing or altered',
+            }),
+        );
     }
-    if (signal?.aborted === true) {
-        return Object.freeze({ outcome: 'time-limit' });
+    // Deterministic engine entropy: blank-node identifiers depend only on the dataset.
+    const seed = createHash('sha256').update(batch.nquads).digest('hex');
+    const results: LocalQueryEngineResult[] = [];
+    while (results.length < batch.queries.length) {
+        if (signal?.aborted === true) {
+            results.push(Object.freeze({ outcome: 'time-limit' }));
+            continue;
+        }
+        const remaining = batch.queries.slice(results.length);
+        const answered = await runWorker(directory, seed, batch.nquads, remaining, batch.milliseconds, signal);
+        results.push(...answered);
     }
+    return Object.freeze(results);
+}
+
+/** One worker over `queries`: the answers it gave, then, if it stopped early, one result for the query it stopped on. */
+async function runWorker(
+    directory: string,
+    seed: string,
+    nquads: string,
+    queries: ReadonlyArray<LocalQueryEngineQuery>,
+    milliseconds: number,
+    signal: AbortSignal | undefined,
+): Promise<ReadonlyArray<LocalQueryEngineResult>> {
     let worker: Worker;
     try {
         worker = new Worker(WORKER_SOURCE, {
@@ -59,38 +120,42 @@ export async function runLocalQuery(
             stderr: true,
             workerData: {
                 directory,
-                // Deterministic engine entropy: blank-node identifiers depend only on the dataset and the query.
-                seed: createHash('sha256').update(input.nquads).update('\u0000').update(input.query).digest('hex'),
-                nquads: input.nquads,
-                defaultGraph: [...input.defaultGraph],
-                namedGraphs: [...input.namedGraphs],
-                query: input.query,
-                format: input.format,
+                seed,
+                nquads,
+                queries: queries.map((query) => ({
+                    query: query.query,
+                    defaultGraph: [...query.defaultGraph],
+                    namedGraphs: [...query.namedGraphs],
+                    format: query.format,
+                })),
             },
         });
     } catch (cause) {
-        return Object.freeze({
-            outcome: 'unavailable',
-            message: cause instanceof Error ? cause.message : String(cause),
-        });
+        return [
+            Object.freeze({ outcome: 'unavailable', message: cause instanceof Error ? cause.message : String(cause) }),
+        ];
     }
-    return await new Promise<LocalQueryEngineResult>((resolve) => {
+    const answers: LocalQueryEngineResult[] = [];
+    return await new Promise<ReadonlyArray<LocalQueryEngineResult>>((resolve) => {
         let settled = false;
-        function finish(result: LocalQueryEngineResult): void {
+        let timer = setTimeout(abort, Math.max(1, milliseconds));
+        function finish(last: LocalQueryEngineResult | null): void {
             if (settled) {
                 return;
             }
             settled = true;
             clearTimeout(timer);
             signal?.removeEventListener('abort', abort);
+            if (last !== null) {
+                answers.push(last);
+            }
             void worker.terminate().finally(() => {
-                resolve(result);
+                resolve(answers);
             });
         }
         function abort(): void {
             finish(Object.freeze({ outcome: 'time-limit' }));
         }
-        const timer = setTimeout(abort, Math.max(1, input.milliseconds));
         signal?.addEventListener('abort', abort, { once: true });
         worker.stdout.resume();
         worker.stderr.resume();
@@ -103,12 +168,40 @@ export async function runLocalQuery(
             );
         });
         worker.once('exit', () => {
-            finish(Object.freeze({ outcome: 'unavailable', message: 'the query engine stopped without an answer' }));
+            finish(
+                answers.length < queries.length
+                    ? Object.freeze({ outcome: 'unavailable', message: 'the query engine stopped without an answer' })
+                    : null,
+            );
         });
-        worker.once('message', (message: unknown) => {
-            finish(decodeWorkerMessage(message));
+        worker.on('message', (message: unknown) => {
+            if (settled) {
+                return;
+            }
+            const result = decodeWorkerMessage(message);
+            if (result.outcome === 'unavailable' && answers.length === 0 && isLoadFailure(message)) {
+                // The dataset did not load: no query of this batch can run.
+                settled = true;
+                clearTimeout(timer);
+                signal?.removeEventListener('abort', abort);
+                void worker.terminate().finally(() => {
+                    resolve(queries.map(() => result));
+                });
+                return;
+            }
+            answers.push(result);
+            if (answers.length === queries.length) {
+                finish(null);
+                return;
+            }
+            clearTimeout(timer);
+            timer = setTimeout(abort, Math.max(1, milliseconds));
         });
     });
+}
+
+function isLoadFailure(message: unknown): boolean {
+    return (message as Readonly<Record<string, unknown>> | null)?.stage === 'load';
 }
 
 function decodeWorkerMessage(message: unknown): LocalQueryEngineResult {

@@ -17,6 +17,10 @@ import {
     DEFAULT_REASONER_LIMITS,
     localQueryNQuads,
     localQueryNTriples,
+    questionGraphQuads,
+    questionRegime,
+    sourceGraphIri,
+    type LoadedCompetencyQuestion,
     makeNodeOntologyPorts,
     makeOntologyService,
     nodeReasonerService,
@@ -93,7 +97,13 @@ export interface PreparedProjectQuery {
         defaultGraph: ReadonlyArray<string>;
         namedGraphs: ReadonlyArray<string>;
         quadCounts: Readonly<{ declared: number; inferred: number }>;
+        /** One named graph per source, `urn:erden:source:<source-id>`, holding what that source asserts. */
+        sourceGraphs: ReadonlyArray<string>;
     }>;
+    /** The root project's competency questions the caller selected, in id order; empty unless it asked. */
+    readonly questions: ReadonlyArray<LoadedCompetencyQuestion>;
+    /** Selections that name no root competency question. */
+    readonly unknownQuestions: ReadonlyArray<string>;
 }
 
 export interface QueryProjectOptions {
@@ -102,6 +112,17 @@ export interface QueryProjectOptions {
     /** Absent: entailed when it can be had, else asserted. Present: that regime, or an answer that says it is not. */
     readonly regime?: LocalQueryRegime;
     readonly reasonerLimits?: ReasonerLimits;
+    /**
+     * The competency questions to load: `all` of the root project's, or those whose id or absolute file path is
+     * listed by id or file. When every one asks for the asserted regime and no regime is given, no reasoning runs.
+     */
+    readonly questions?: 'all' | ReadonlyArray<QuestionSelection>;
+}
+
+/** One selected question: by id, or by its file, the name made absolute. */
+export interface QuestionSelection {
+    readonly name: string;
+    readonly path: string;
 }
 
 export interface QueryProjectServiceShape {
@@ -322,9 +343,38 @@ function prepareProjectQuery(
             reasons.unshift({ code: 'sources-unparsed', sources: Object.freeze(unparsed) });
         }
 
+        // Competency questions, when asked for: the root project's, as `erden check` loads them.
+        let questions: ReadonlyArray<LoadedCompetencyQuestion> = [];
+        const unknownQuestions: string[] = [];
+        if (options.questions !== undefined) {
+            const locations = sourceLocationsForProject(rootProject).competencyQuestions;
+            const loadedQuestions = yield* ontologyService
+                .discoverCompetencyQuestions(locations, false)
+                .pipe(Effect.mapError((cause) => ontologyError(cause, 'sources', projectRoot)));
+            const selection = options.questions;
+            if (selection === 'all') {
+                questions = loadedQuestions;
+            } else {
+                function matches(item: QuestionSelection, question: LoadedCompetencyQuestion): boolean {
+                    return question.id === item.name || question.locator === item.path;
+                }
+                questions = loadedQuestions.filter((question) => selection.some((item) => matches(item, question)));
+                unknownQuestions.push(
+                    ...selection
+                        .filter((item) => !loadedQuestions.some((question) => matches(item, question)))
+                        .map((item) => item.name),
+                );
+            }
+            questions = [...questions].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+        }
+        const onlyAsserted =
+            options.questions !== undefined &&
+            questions.length > 0 &&
+            questions.every((question) => questionRegime(question.metadata) === 'asserted');
+
         // The regime: entailed when the project's reasoning succeeds (or succeeded for these exact inputs).
         let entailment: Entailment | null = null;
-        if (options.regime !== 'asserted') {
+        if (options.regime !== 'asserted' && !(options.regime === undefined && onlyAsserted)) {
             entailment = yield* entail(
                 graph,
                 projectRoot,
@@ -341,15 +391,23 @@ function prepareProjectQuery(
         if (entailed !== null && entailed.entry.outsideProfileStatements > 0) {
             reasons.push({ code: 'statements-outside-profile', count: entailed.entry.outsideProfileStatements });
         }
-        const asserted = localQueryNTriples(graph.dataset.getQuads(null, null, null, null));
+        const split = questionGraphQuads(graph);
+        const sources = [...split.bySource.entries()].sort(([left], [right]) =>
+            left < right ? -1 : left > right ? 1 : 0,
+        );
         const nquads = localQueryNQuads([
-            { graph: LOCAL_QUERY_GRAPHS.declared, ntriples: asserted },
+            { graph: LOCAL_QUERY_GRAPHS.declared, ntriples: localQueryNTriples(split.declared) },
+            ...sources.map(([sourceId, quads]) => ({
+                graph: sourceGraphIri(sourceId),
+                ntriples: localQueryNTriples(quads),
+            })),
             ...(entailed === null ? [] : [{ graph: LOCAL_QUERY_GRAPHS.inferred, ntriples: entailed.entry.ntriples }]),
         ]);
         const graphs =
             entailed === null
                 ? [LOCAL_QUERY_GRAPHS.declared]
                 : [LOCAL_QUERY_GRAPHS.declared, LOCAL_QUERY_GRAPHS.inferred];
+        const sourceGraphs = sources.map(([sourceId]) => sourceGraphIri(sourceId));
         yield* services.projectStateService
             .recheck({ revision: state.revision })
             .pipe(Effect.mapError(projectLockError));
@@ -373,12 +431,15 @@ function prepareProjectQuery(
             dataset: Object.freeze({
                 nquads,
                 defaultGraph: Object.freeze(graphs),
-                namedGraphs: Object.freeze(graphs),
+                namedGraphs: Object.freeze([...graphs, ...sourceGraphs]),
+                sourceGraphs: Object.freeze(sourceGraphs),
                 quadCounts: Object.freeze({
                     declared: graph.dataset.size,
                     inferred: entailed?.entry.statementCount ?? 0,
                 }),
             }),
+            questions: Object.freeze(questions),
+            unknownQuestions: Object.freeze(unknownQuestions),
         } satisfies PreparedProjectQuery);
     });
 }
