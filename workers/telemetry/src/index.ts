@@ -5,9 +5,9 @@ import { json, type WorkerContext } from '../../shared/http.js';
 import { dailyMaintenance, handle, type Env } from './handler.js';
 
 export default {
-    async fetch(request: Request, env: Env): Promise<Response> {
+    async fetch(request: Request, env: Env, context: WorkerContext): Promise<Response> {
         try {
-            return await handle(request, env);
+            return await handle(request, env, new Date(), context);
         } catch {
             return json({ error: 'unavailable' }, 503);
         }
