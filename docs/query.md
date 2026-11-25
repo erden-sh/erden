@@ -31,11 +31,17 @@ The graphs are the registry's, so a query that uses only them runs the same way 
 | ------------------------------------------- | ---------------------------------------------------------------------- |
 | `urn:erden:release-query:v1:graph:declared` | the statements the files assert                                        |
 | `urn:erden:release-query:v1:graph:inferred` | what Erden's reasoner infers from them, beyond the asserted statements |
+| `urn:erden:source:<source-id>`              | what one source file asserts, one graph per source                     |
 
 The default graph depends on the regime: the declared graph in the asserted regime, and the union of both in the
 entailed regime. `GRAPH <urn:erden:release-query:v1:graph:inferred> { … }` reads the inferences alone, in the entailed
 regime. On the registry the default graph is always the declared graph; a query that reads inferences through the
 `GRAPH` pattern gets the same rows from a release and from its project in the entailed regime.
+
+The source graphs let a query say which file a statement comes from: `GRAPH ?source { ?s ?p ?o }` binds `?source` to
+`urn:erden:source:<source-id>`, where `<source-id>` is the id `erden check --json` lists for that file under
+`sources.files` (for example `root:ontology:0001:repo.ttl`), with any character an IRI cannot hold percent-encoded. A
+statement two sources assert is in both their graphs. The registry has no source graphs.
 
 ## Regimes: asserted and entailed
 
@@ -150,6 +156,41 @@ Description terms:
 In the asserted regime, `regime` holds only `entailmentRegime: "http://www.w3.org/ns/entailment/Simple"`. For
 `CONSTRUCT` and `DESCRIBE`, `result` is `{ "ntriples": "…" }`. `warnings` lists `{ "code": "registry-refuses",
 "reason": "…" }` when the registry's language refuses the query.
+
+## Competency questions
+
+`erden query [project-dir] --questions` runs the project's competency questions (`sources.competencyQuestions`), without
+the rest of the check; `--questions <id-or-path>…` runs only those named, by id or by file. It prints one line per
+question, with its rows, its expectation, whether it was met, and its regime, then the dataset's labels. `--json` prints
+the `erden.local-questions-result/v1` envelope instead. Questions a dependency ships stay dormant, as in `erden check`.
+
+A question is a plain `.rq` file with a comment header, so any SPARQL engine still runs it:
+
+```sparql
+# @ask     Which routes does the client call that no server code registers?
+# @expect  rows == 0
+# @from    audit/facts.ttl
+# @regime  asserted
+SELECT ?key WHERE { … }
+```
+
+- `# @regime asserted|entailed` picks the regime; entailed when absent. A closed-world check about what the files say
+  can pin `asserted`, which documents that, and skips reasoning when every question run pins it. A question that asks
+  for entailed answers and cannot have them answers asserted and is labeled partial.
+- `# @expect` takes a row count (`rows == 0`, also `>=`, `<=`, `>`, `<`), or a file of expected results beside the
+  question, in a W3C results format (`.srj` or `.json` for SPARQL JSON, `.csv`, `.tsv`):
+    - `# @expect results expected.srj`: exactly these results, compared as a set, or as a sequence when the query has a
+      top-level `ORDER BY`. A blank node matches any blank node.
+    - `# @expect contains expected.srj`: at least these rows.
+
+The exit code is 1 when a question fails its expectation (an expected failure documented with `# @status EXPECTED TO
+FAIL` and `# @closes` does not), 4 when every expectation is met but some answer is partial, and 0 otherwise.
+
+`erden check` reads the same headers. When its reasoning does not complete (the reasoner refuses, the ontology is
+inconsistent, or the request is over a limit), it still runs the project's questions, over the asserted statements,
+and reports them as advisory: in the report's `advisoryCompetencyQuestions` section, or, when the check cannot write a
+report, as `advisory-competency-question` lines under its error. Advisory results never change the check's verdict or
+exit code.
 
 ## Exit codes
 

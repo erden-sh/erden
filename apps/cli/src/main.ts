@@ -50,6 +50,7 @@ import {
     nodeCheckProjectService,
     nodeQueryProjectService,
     runLocalQuery,
+    runLocalQueries,
     type QueryProjectServiceShape,
     nodeDoctorService,
     nodeInitProjectService,
@@ -170,7 +171,7 @@ Usage:
   erden pack <version> [project-dir] [--config <file>] [--output <file>] [--json]
   erden publish <version> [project-dir] [--config <file>] [--output <file>] [--create [--visibility public|private] [--yes]] [--no-wait] [--json]
   erden publication <attempt-id> [--registry <origin>] [--wait] [--report] [--json]
-  erden query [project-dir] (--file <path> | --stdin) [--config <file>] [--regime <asserted|entailed>] [--json | --sparql-json | --csv | --tsv] [--timeout <seconds>] [--allow-incomplete] [--registry-compatible] [--offline]
+  erden query [project-dir] (--file <path> | --stdin | --questions [<id-or-path>...]) [--config <file>] [--regime <asserted|entailed>] [--json | --sparql-json | --csv | --tsv] [--timeout <seconds>] [--allow-incomplete] [--registry-compatible] [--offline]
   erden query <identifier>@<version> (--file <path> | --stdin) [--registry <origin>] [--json | --sparql-json]
   erden path <layer> [--config <file>] [--json]
   erden store path [--json]
@@ -199,7 +200,8 @@ Local query:
   dependencies, on this machine. Answers are entailed (what the files imply under Erden's reasoner) when the
   project's reasoning succeeds, else asserted (what the files say), and always say which, and whether anything was
   left out. Exit codes: 0 answered and complete, 1 query refused, 2 usage, 3 could not complete, 4 answered but
-  partial (--allow-incomplete makes it 0). A query the registry's query language refuses gets a warning;
+  partial (--allow-incomplete makes it 0). --questions runs the project's competency questions, or those named,
+  without the rest of the check: exit 1 when one fails its expectation. A query the registry's query language refuses gets a warning;
   --registry-compatible refuses it instead. Inferences are cached in ~/.cache/erden (XDG_CACHE_HOME).
 
 Registry transport:
@@ -1361,6 +1363,7 @@ export async function runCli(arguments_: ReadonlyArray<string>, runtime: CliRunt
                     : {
                           project,
                           run: runLocalQuery,
+                          runBatch: runLocalQueries,
                           readFile: runtime.query?.readFile ?? readCliQueryFile,
                           readStdin: runtime.query?.readStdin ?? readCliQueryStdin,
                           reasonerLimits: () => reasonerLimits(runtime),

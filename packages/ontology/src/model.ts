@@ -192,6 +192,8 @@ export interface CompetencyQuestionMetadata {
     readonly from: string | null;
     readonly status: string | null;
     readonly closes: string | null;
+    /** `# @regime asserted|entailed`: the regime the question asks for; entailed when absent. */
+    readonly regime: string | null;
 }
 
 export type CompetencyQuestionMetadataCode =
@@ -199,7 +201,8 @@ export type CompetencyQuestionMetadataCode =
     | 'missing-expect'
     | 'missing-from'
     | 'missing-closes'
-    | 'invalid-expectation';
+    | 'invalid-expectation'
+    | 'invalid-regime';
 
 export interface CompetencyQuestionMetadataDiagnostic {
     readonly code: CompetencyQuestionMetadataCode;
@@ -346,6 +349,10 @@ export interface CompetencyQuestionResult {
     readonly blocking: boolean;
     readonly reason: string;
     readonly sample: ReadonlyArray<Readonly<Record<string, string>>>;
+    /** Present when the answer is asserted: the question pinned it, or reasoning did not complete. */
+    readonly regime?: 'asserted';
+    /** Present when the question asked for the entailed regime and could not have it: why not. */
+    readonly entailmentUnavailable?: string;
 }
 
 export interface CompetencyQuestionValidation {

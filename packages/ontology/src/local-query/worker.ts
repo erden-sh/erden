@@ -2,10 +2,12 @@ interface WorkerInput {
     readonly directory: string;
     readonly seed: string;
     readonly nquads: string;
-    readonly defaultGraph: ReadonlyArray<string>;
-    readonly namedGraphs: ReadonlyArray<string>;
-    readonly query: string;
-    readonly format: 'json' | 'csv' | 'tsv' | 'ntriples';
+    readonly queries: ReadonlyArray<{
+        readonly query: string;
+        readonly defaultGraph: ReadonlyArray<string>;
+        readonly namedGraphs: ReadonlyArray<string>;
+        readonly format: 'json' | 'csv' | 'tsv' | 'ntriples';
+    }>;
 }
 
 /**
@@ -68,37 +70,49 @@ export async function localQueryWorker(load: (specifier: string) => Promise<unkn
         store = new oxigraph.Store();
         store.load(data.nquads, { format: 'application/n-quads', no_transaction: true });
     } catch (cause) {
-        post({ outcome: 'unavailable', message: cause instanceof Error ? cause.message : String(cause) });
+        post({
+            outcome: 'unavailable',
+            stage: 'load',
+            message: cause instanceof Error ? cause.message : String(cause),
+        });
         return;
     }
     const loadMilliseconds = performance.now() - loadStarted;
-    const format =
-        data.format === 'json'
-            ? 'application/sparql-results+json'
-            : data.format === 'csv'
-              ? 'text/csv'
-              : data.format === 'tsv'
-                ? 'text/tab-separated-values'
-                : 'application/n-triples';
-    const queryStarted = performance.now();
-    let text: unknown;
-    try {
-        text = store.query(data.query, {
-            results_format: format,
-            default_graph: data.defaultGraph.map((name) => oxigraph.namedNode(name)),
-            named_graphs: data.namedGraphs.map((name) => oxigraph.namedNode(name)),
-        });
-    } catch (cause) {
-        if (cause instanceof WebAssembly.RuntimeError) {
-            post({ outcome: 'unavailable', message: cause.message });
-            return;
+    for (const [index, item] of data.queries.entries()) {
+        const format =
+            item.format === 'json'
+                ? 'application/sparql-results+json'
+                : item.format === 'csv'
+                  ? 'text/csv'
+                  : item.format === 'tsv'
+                    ? 'text/tab-separated-values'
+                    : 'application/n-triples';
+        const queryStarted = performance.now();
+        let text: unknown;
+        try {
+            text = store.query(item.query, {
+                results_format: format,
+                default_graph: item.defaultGraph.map((name) => oxigraph.namedNode(name)),
+                named_graphs: item.namedGraphs.map((name) => oxigraph.namedNode(name)),
+            });
+        } catch (cause) {
+            if (cause instanceof WebAssembly.RuntimeError) {
+                // The instance cannot be trusted after a trap; the parent runs the rest in a fresh worker.
+                post({ outcome: 'unavailable', message: cause.message });
+                process.exit(1);
+            }
+            post({ outcome: 'query-error', message: cause instanceof Error ? cause.message : String(cause) });
+            continue;
         }
-        post({ outcome: 'query-error', message: cause instanceof Error ? cause.message : String(cause) });
-        return;
+        if (typeof text !== 'string') {
+            post({ outcome: 'unavailable', message: 'the query engine returned no serialized result' });
+            continue;
+        }
+        post({
+            outcome: 'complete',
+            text,
+            loadMilliseconds: index === 0 ? loadMilliseconds : 0,
+            queryMilliseconds: performance.now() - queryStarted,
+        });
     }
-    if (typeof text !== 'string') {
-        post({ outcome: 'unavailable', message: 'the query engine returned no serialized result' });
-        return;
-    }
-    post({ outcome: 'complete', text, loadMilliseconds, queryMilliseconds: performance.now() - queryStarted });
 }

@@ -29,6 +29,7 @@ import {
     makeNodeEntailmentCache,
     makeNodeInstallProjectService,
     makeQueryProjectService,
+    renderCheckProjectReport,
     runLocalQuery,
     type EntailmentCachePort,
     type PreparedProjectQuery,
@@ -68,6 +69,7 @@ function writeProject(
     files: Readonly<Record<string, string>>,
     options: Readonly<{
         sources?: ReadonlyArray<string>;
+        questions?: ReadonlyArray<string>;
         dependencies?: Readonly<Record<string, string>>;
         outsideProfile?: 'report';
     }> = {},
@@ -81,7 +83,10 @@ function writeProject(
         canonicalIri: 'https://example.test/root',
         alias: '@example/root',
         ownedIriPrefixes: ['https://example.test/root#'],
-        sources: { ontology: [...(options.sources ?? ['ontology.ttl'])] },
+        sources: {
+            ontology: [...(options.sources ?? ['ontology.ttl'])],
+            competencyQuestions: [...(options.questions ?? [])],
+        },
         dependencies: options.dependencies ?? {},
         ...(options.outsideProfile === undefined ? {} : { outsideProfile: options.outsideProfile }),
     });
@@ -341,5 +346,129 @@ describe('QueryProject', () => {
         expect(
             await ask(prepared, 'ASK { <https://example.test/root#rex> a <https://example.test/dependency#Animal> }'),
         ).toBe(true);
+    });
+});
+
+const QUESTION = `# @ask     Is Rex an animal?
+# @expect  rows == 1
+# @from    ontology.ttl
+SELECT ?x WHERE { ?x a <https://example.test/root#Animal> }
+`;
+const ASSERTED_QUESTION = `# @ask     Which dogs do the files name?
+# @expect  results dogs.srj
+# @from    ontology.ttl
+# @regime  asserted
+SELECT ?x WHERE { ?x a <https://example.test/root#Dog> }
+`;
+const DOGS = JSON.stringify({
+    head: { vars: ['x'] },
+    results: { bindings: [{ x: { type: 'uri', value: 'https://example.test/root#rex' } }] },
+});
+
+function checkService() {
+    return makeCheckProjectService(
+        makeManifestService(),
+        makeOntologyService(makeNodeOntologyPorts()),
+        nodeReasonerService,
+    );
+}
+
+describe('competency questions with regimes, expected results, and advisory runs', () => {
+    it('loads the questions a query asks for, and skips reasoning when every one pins asserted', async () => {
+        const root = writeProject(
+            { 'ontology.ttl': ONTOLOGY, 'q.rq': QUESTION, 'dogs.rq': ASSERTED_QUESTION, 'dogs.srj': DOGS },
+            { questions: ['q.rq', 'dogs.rq'] },
+        );
+        const reasoner = counting(nodeReasonerService);
+        const all = await prepare(root, { questions: 'all' }, queryService(disabledEntailmentCache, reasoner.service));
+        expect(all.questions.map((item) => item.id)).toEqual([
+            'root:competency-questions:0000',
+            'root:competency-questions:0001',
+        ]);
+        expect(all.regime).toBe('entailed');
+        expect(all.dataset.sourceGraphs).toEqual(['urn:erden:source:root:ontology:0000']);
+        const asserted = await prepare(
+            root,
+            {
+                questions: [
+                    { name: 'dogs.rq', path: join(root, 'dogs.rq') },
+                    { name: 'nope', path: join(root, 'nope') },
+                ],
+            },
+            queryService(disabledEntailmentCache, reasoner.service),
+        );
+        expect(asserted.questions.map((item) => item.id)).toEqual(['root:competency-questions:0001']);
+        expect(asserted.unknownQuestions).toEqual(['nope']);
+        expect(asserted.regime).toBe('asserted');
+        expect(reasoner.calls()).toBe(1);
+    });
+
+    it('judges questions in a passing check by their regime and expected results', async () => {
+        const root = writeProject(
+            { 'ontology.ttl': ONTOLOGY, 'q.rq': QUESTION, 'dogs.rq': ASSERTED_QUESTION, 'dogs.srj': DOGS },
+            { questions: ['q.rq', 'dogs.rq'] },
+        );
+        const report = await Effect.runPromise(checkService().check({ from: root }));
+        expect(report.outcome).toBe('passed');
+        expect(report.stages.competencyQuestions.details?.questions.map((item) => [item.ok, item.regime])).toEqual([
+            [true, undefined],
+            [true, 'asserted'],
+        ]);
+        expect(report.advisoryCompetencyQuestions).toBeUndefined();
+    });
+
+    it('reports questions as advisory when reasoning fails, without changing the verdict', async () => {
+        const root = writeProject(
+            {
+                'ontology.ttl': `${ONTOLOGY}ex:Cat a owl:Class ; owl:disjointWith ex:Dog .\nex:rex a ex:Cat .\n`,
+                'q.rq': QUESTION,
+                'dogs.rq': ASSERTED_QUESTION,
+                'dogs.srj': DOGS,
+            },
+            { questions: ['q.rq', 'dogs.rq'] },
+        );
+        const report = await Effect.runPromise(checkService().check({ from: root }));
+        expect(report.outcome).toBe('failed');
+        expect(report.stages.competencyQuestions.status).toBe('not-run');
+        expect(report.advisoryCompetencyQuestions).toMatchObject({
+            regime: 'asserted',
+            entailmentUnavailable: 'global-inconsistency',
+            questions: [
+                { file: 'q.rq', ok: false, rows: 0, regime: 'asserted', entailmentUnavailable: 'global-inconsistency' },
+                { file: 'dogs.rq', ok: true, regime: 'asserted' },
+            ],
+        });
+        expect(renderCheckProjectReport(report)).toContain(
+            'Competency questions (advisory: reasoning did not complete',
+        );
+    });
+
+    it('lists advisory question results under a check error when reasoning cannot run', async () => {
+        const root = writeProject(
+            { 'ontology.ttl': ONTOLOGY, 'dogs.rq': ASSERTED_QUESTION, 'dogs.srj': DOGS },
+            { questions: ['dogs.rq'] },
+        );
+        const outcome = await Effect.runPromise(
+            Effect.result(
+                checkService().check({
+                    from: root,
+                    reasonerLimits: {
+                        maxWallTimeMs: 30_000,
+                        maxInputAxioms: 1,
+                        maxInferences: 100_000,
+                        maxRequestBytes: 16_777_216,
+                    },
+                }),
+            ),
+        );
+        if (outcome._tag === 'Success') {
+            expect(outcome.success.advisoryCompetencyQuestions?.questions).toMatchObject([
+                { file: 'dogs.rq', ok: true },
+            ]);
+        } else {
+            expect(outcome.failure.diagnostics).toContainEqual(
+                expect.objectContaining({ code: 'advisory-competency-question', file: 'dogs.rq' }),
+            );
+        }
     });
 });

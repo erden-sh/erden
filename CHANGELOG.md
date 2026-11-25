@@ -22,6 +22,15 @@ Changes to the `erden` CLI that a user or a script can see. Each release's notes
   digest of the reasoner and the exact sources, in `~/.cache/erden/entailments/v1` (`XDG_CACHE_HOME`; on Windows
   `%LOCALAPPDATA%\Erden\cache\entailments\v1`), so a query after a check does not reason again. It is safe to delete.
 
+- **Competency questions on their own: `erden query --questions [<id-or-path>…]`.** Runs the project's questions, or
+  those named, without the rest of the check, each with its rows, expectation, verdict and regime.
+- **`# @regime asserted|entailed`** in a question's header picks its regime (entailed when absent).
+- **Expected results files.** `# @expect results <file>` compares the answer with a W3C results file (`.srj`,
+  `.json`, `.csv`, `.tsv`), as a set or, with a top-level `ORDER BY`, a sequence; `# @expect contains <file>` checks
+  that it holds at least those rows. `erden check` reads them too.
+- **One named graph per source.** Questions and local queries can read `urn:erden:source:<source-id>`, which holds what
+  one source file asserts.
+
 ### Changed
 
 - **New exit code 4 (public interface).** `erden query [project-dir]` exits 4 when it answered but the answer is
@@ -29,3 +38,8 @@ Changes to the `erden` CLI that a user or a script can see. Each release's notes
   `--allow-incomplete` turns 4 into 0. Anonymous telemetry counts exit 4 as `success`.
 - `erden query <identifier>@<version>` is unchanged. A first argument that is not `<alias-or-IRI>@<version>` used to
   be a usage error; it is now the project directory of a local query.
+- **`erden check` runs competency questions when its reasoning does not complete.** They run over the asserted
+  statements and are reported as advisory, in a new optional `advisoryCompetencyQuestions` section of the
+  `erden.check-report/v1` JSON report, or under the error when no report is written. The verdict and exit code do not
+  change. Reports without it keep their bytes. A question's result in the report gains an optional `regime:
+"asserted"` when it answered asserted, and the metadata diagnostic `invalid-regime` is new.

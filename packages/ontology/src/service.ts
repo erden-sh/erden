@@ -38,7 +38,7 @@ import type {
 } from './model.js';
 import type { OntologyPorts } from './ports.js';
 import type { TextResourcePort } from './ports.js';
-import { runCompetencyQuestions } from './questions.js';
+import { expectedResultsLocator, runCompetencyQuestions, type CompetencyQuestionRunOptions } from './questions.js';
 import { offerAssembledOntology } from './reasoner/ownership.js';
 import { nodeShaclEnginePort } from './shacl-engine/port.js';
 import { validateShacl, validateShaclWithEvidence, type ShaclValidationError } from './shacl.js';
@@ -109,9 +109,14 @@ export interface OntologyServiceShape {
         sources: ReadonlyArray<ShapeSourceDescriptor>,
         required: boolean,
     ) => Effect.Effect<ShaclValidation | null, ShaclValidationError>;
+    /**
+     * Runs competency questions over a graph. With `entailmentUnavailable`, the graph is asserted only (reasoning did
+     * not complete) and every answer says so.
+     */
     readonly competencyQuestions: (
         graph: AssembledOntology,
         questions: ReadonlyArray<LoadedCompetencyQuestion>,
+        options?: Readonly<{ entailmentUnavailable?: string }>,
     ) => Effect.Effect<CompetencyQuestionValidation, CompetencyQuestionArtifactError>;
     readonly citations: (
         graph: AssembledOntology,
@@ -129,6 +134,40 @@ export const OntologyService = Context.Service<OntologyServiceShape>('@erden/ont
 
 export function makeOntologyService(ports: OntologyPorts): OntologyServiceShape {
     const shaclEngine = ports.shaclEngine ?? nodeShaclEnginePort;
+    /** The expected-results files root questions name, read before they run; an unreadable one is null. */
+    function expectedResults(
+        questions: ReadonlyArray<LoadedCompetencyQuestion>,
+    ): Effect.Effect<NonNullable<CompetencyQuestionRunOptions['expectedResults']>> {
+        return Effect.gen(function* () {
+            const files = new Map<string, Uint8Array | null>();
+            for (const question of questions) {
+                const locator = question.owner.role === 'root' ? expectedResultsLocator(question) : null;
+                if (locator === null || files.has(locator)) {
+                    continue;
+                }
+                const read = yield* Effect.result(ports.resources.readBytes(locator));
+                files.set(locator, read._tag === 'Success' ? Uint8Array.from(read.success) : null);
+            }
+            return files;
+        });
+    }
+    function questionsOver(
+        graph: AssembledOntology,
+        questions: ReadonlyArray<LoadedCompetencyQuestion>,
+        options: Readonly<{ entailmentUnavailable?: string }> = {},
+    ): Effect.Effect<CompetencyQuestionValidation, CompetencyQuestionArtifactError> {
+        return expectedResults(questions).pipe(
+            Effect.flatMap((files) =>
+                Effect.try({
+                    try: () => runCompetencyQuestions(graph, questions, { ...options, expectedResults: files }),
+                    catch: (cause) =>
+                        cause instanceof CompetencyQuestionArtifactError
+                            ? cause
+                            : new CompetencyQuestionArtifactError('unknown', cause),
+                }),
+            ),
+        );
+    }
     function byteBackedResources(
         values: ReadonlyArray<
             Readonly<{
@@ -202,15 +241,7 @@ export function makeOntologyService(ports: OntologyPorts): OntologyServiceShape 
                 );
             }
             const competencyQuestions =
-                input.competencyQuestions.length === 0
-                    ? null
-                    : yield* Effect.try({
-                          try: () => runCompetencyQuestions(graph, input.competencyQuestions),
-                          catch: (cause) =>
-                              cause instanceof CompetencyQuestionArtifactError
-                                  ? cause
-                                  : new CompetencyQuestionArtifactError('unknown', cause),
-                      });
+                input.competencyQuestions.length === 0 ? null : yield* questionsOver(graph, input.competencyQuestions);
             const citationVocabulary = settings.citationVocabulary;
             const citationObservations =
                 settings.citationObservationOwners === 'root'
@@ -306,14 +337,7 @@ export function makeOntologyService(ports: OntologyPorts): OntologyServiceShape 
             discoverCompetencyQuestions(ports.resources, locations, required),
         assemble: (sources) => assembleOntology(ports.resources, sources),
         shacl: (graph, sources, required) => validateShacl(ports.resources, graph, sources, required, shaclEngine),
-        competencyQuestions: (graph, questions) =>
-            Effect.try({
-                try: () => runCompetencyQuestions(graph, questions),
-                catch: (cause) =>
-                    cause instanceof CompetencyQuestionArtifactError
-                        ? cause
-                        : new CompetencyQuestionArtifactError('unknown', cause),
-            }),
+        competencyQuestions: questionsOver,
         citations: (graph, roots, vocabulary) =>
             validateCitations(ports.citationFiles, ports.git, {
                 dataset: graph.dataset,

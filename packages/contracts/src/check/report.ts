@@ -272,39 +272,55 @@ const ShaclDetails = Schema.NullOr(
     }),
 );
 
-const CompetencyQuestionDetails = Schema.NullOr(
-    Schema.Struct({
-        conforms: Schema.Boolean,
-        executed: NonNegativeInteger,
-        dormant: NonNegativeInteger,
-        questions: Schema.Array(
-            Schema.Struct({
-                id: Identifier,
-                owner: CheckReportOwner,
-                file: PortablePath,
-                execution: Schema.Literals(['executed', 'dormant-dependency']),
-                rows: Schema.NullOr(NonNegativeInteger),
-                ok: Schema.NullOr(Schema.Boolean),
-                expectedToFail: Schema.Boolean,
-                closes: Schema.NullOr(WellFormedText),
-                blocking: Schema.Boolean,
-                reason: WellFormedText,
-                metadataDiagnostics: Schema.Array(
-                    Schema.Struct({
-                        code: Schema.Literals([
-                            'missing-ask',
-                            'missing-expect',
-                            'missing-from',
-                            'missing-closes',
-                            'invalid-expectation',
-                        ]),
-                        message: WellFormedText,
-                    }),
-                ),
-            }),
-        ),
-    }),
-);
+const CompetencyQuestionFields = {
+    conforms: Schema.Boolean,
+    executed: NonNegativeInteger,
+    dormant: NonNegativeInteger,
+    questions: Schema.Array(
+        Schema.Struct({
+            id: Identifier,
+            owner: CheckReportOwner,
+            file: PortablePath,
+            execution: Schema.Literals(['executed', 'dormant-dependency']),
+            rows: Schema.NullOr(NonNegativeInteger),
+            ok: Schema.NullOr(Schema.Boolean),
+            expectedToFail: Schema.Boolean,
+            closes: Schema.NullOr(WellFormedText),
+            blocking: Schema.Boolean,
+            reason: WellFormedText,
+            metadataDiagnostics: Schema.Array(
+                Schema.Struct({
+                    code: Schema.Literals([
+                        'missing-ask',
+                        'missing-expect',
+                        'missing-from',
+                        'missing-closes',
+                        'invalid-expectation',
+                        'invalid-regime',
+                    ]),
+                    message: WellFormedText,
+                }),
+            ),
+            /** Present only when the answer is asserted (`# @regime asserted`), so other reports keep their bytes. */
+            regime: Schema.optionalKey(Schema.Literal('asserted')),
+            /** Present only when the question asked for the entailed regime and could not have it. */
+            entailmentUnavailable: Schema.optionalKey(Identifier),
+        }),
+    ),
+};
+
+const CompetencyQuestionDetails = Schema.NullOr(Schema.Struct(CompetencyQuestionFields));
+
+/**
+ * Competency questions run over the asserted statements when reasoning did not complete: advisory, never part of
+ * the verdict. Present only then, and only when the project has questions, so other reports keep their bytes.
+ */
+const AdvisoryCompetencyQuestions = Schema.Struct({
+    regime: Schema.Literal('asserted'),
+    /** The reasoning stage's failure code. */
+    entailmentUnavailable: Identifier,
+    ...CompetencyQuestionFields,
+});
 
 const CitationDetails = Schema.NullOr(
     Schema.Struct({
@@ -516,6 +532,7 @@ export const CheckProjectReportSchema = Schema.Struct({
         citations: Schema.Struct({ ...StageSummary.fields, details: CitationDetails }),
     }),
     unreasoned: Schema.optionalKey(CheckReportUnreasoned),
+    advisoryCompetencyQuestions: Schema.optionalKey(AdvisoryCompetencyQuestions),
     /** Present only when a predicate is used undeclared, so reports without one keep their bytes. */
     undeclaredAnnotationProperties: Schema.optionalKey(
         Schema.Array(CheckReportUndeclaredAnnotationProperty).check(Schema.isMinLength(1)),
@@ -695,8 +712,10 @@ function assertCanonicalOrdering(report: CheckProjectReport): void {
             }
         }
     }
-    const questions = report.stages.competencyQuestions.details;
-    if (questions !== null) {
+    for (const questions of [report.stages.competencyQuestions.details, report.advisoryCompetencyQuestions ?? null]) {
+        if (questions === null) {
+            continue;
+        }
         assertSorted(questions.questions, (item) => item.id, 'competency questions');
         for (const question of questions.questions) {
             assertOwner(question.owner);
@@ -1121,8 +1140,7 @@ function assertReportSemantics(report: CheckProjectReport): void {
             'SHACL',
         );
     }
-    const questions = stages.competencyQuestions.details;
-    if (questions !== null) {
+    function assertQuestions(questions: NonNullable<typeof stages.competencyQuestions.details>): void {
         const executed = questions.questions.filter((item) => item.execution === 'executed').length;
         const dormant = questions.questions.filter((item) => item.execution === 'dormant-dependency').length;
         if (
@@ -1160,6 +1178,23 @@ function assertReportSemantics(report: CheckProjectReport): void {
         ) {
             throw new TypeError('Competency-question execution state must match owner role and result fields');
         }
+    }
+    if (report.advisoryCompetencyQuestions !== undefined) {
+        if (stages.reasoning.status !== 'failed') {
+            throw new TypeError('Advisory competency questions require a failed reasoning stage');
+        }
+        if (
+            report.advisoryCompetencyQuestions.questions.some(
+                (item) => item.execution === 'executed' && item.regime !== 'asserted',
+            )
+        ) {
+            throw new TypeError('Advisory competency questions answer over asserted statements only');
+        }
+        assertQuestions(report.advisoryCompetencyQuestions);
+    }
+    const questions = stages.competencyQuestions.details;
+    if (questions !== null) {
+        assertQuestions(questions);
         exactCodes(
             stages.competencyQuestions.failureCodes,
             questions.conforms ? [] : ['competency-question-conformance'],

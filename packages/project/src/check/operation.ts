@@ -1420,8 +1420,10 @@ function failedReasoningReport(
         readonly axiomRoots?: ReadonlyMap<string, ReadonlyArray<string>>;
     },
     limits: ReasonerLimits,
+    advisory: CompetencyQuestionValidation | null = null,
 ): CheckProjectReport {
     const sources = sourcesValue(loaded, projects, graph, shapes, questions, evidence.identities);
+    const advisoryQuestions = advisory === null ? null : competencyQuestionValue(projects, advisory);
     const undeclared = undeclaredAnnotationValue(evidence.partition, sources.files, graph);
     const located = locatedDiagnostics(graph, sources.files, reasoning.diagnostics, reasoning.axiomRoots);
     return decodeCheckProjectReport({
@@ -1477,6 +1479,15 @@ function failedReasoningReport(
             ...notRunStages,
         },
         ...unreasonedValue(evidence.partition, sources.files, graph),
+        ...(advisoryQuestions === null
+            ? {}
+            : {
+                  advisoryCompetencyQuestions: {
+                      regime: 'asserted' as const,
+                      entailmentUnavailable: reasoning.failureCode,
+                      ...advisoryQuestions,
+                  },
+              }),
         ...undeclared.section,
         warnings: warningValues([
             ...reasoning.diagnostics
@@ -1649,10 +1660,33 @@ function competencyQuestionValue(
                     })),
                     (item) => `${item.code}\u0000${item.message}`,
                 ),
+                ...(question.regime === undefined ? {} : { regime: question.regime }),
+                ...(question.entailmentUnavailable === undefined
+                    ? {}
+                    : { entailmentUnavailable: question.entailmentUnavailable }),
             })),
             (item) => item.id,
         ),
     };
+}
+
+/** Advisory question results as the lines of a check that could not complete its reasoning. */
+function advisoryQuestionDiagnostics(
+    projects: ReadonlyArray<CheckSourceProject>,
+    validation: CompetencyQuestionValidation,
+): ReadonlyArray<CheckProjectErrorDiagnostic> {
+    const value = competencyQuestionValue(projects, validation);
+    return (value?.questions ?? [])
+        .filter((question) => question.execution === 'executed')
+        .map((question) => ({
+            code: 'advisory-competency-question',
+            message: boundedDiagnosticText(
+                `${question.ok === true ? 'met' : 'not met'} (advisory, asserted statements only): ${question.reason}`,
+            ),
+            file: question.file,
+            line: null,
+            column: null,
+        }));
 }
 
 function citationValue(loaded: LoadedManifestV1, validation: CitationValidation) {
@@ -2227,6 +2261,18 @@ export function runCheckProjectSemanticKernel(
             .pipe(Effect.mapError((cause) => ontologyError(cause, 'sources', loaded.projectRoot)));
         const identities = yield* identifyOntologySources(graph);
         timer?.mark('parse');
+        /** When reasoning does not complete, the root questions still run, over the asserted statements, as advisory. */
+        function advisoryQuestions(cause: string): Effect.Effect<CompetencyQuestionValidation | null> {
+            if (!competencyQuestions.some((question) => question.owner.role === 'root')) {
+                return Effect.succeed(null);
+            }
+            return ontologyService
+                .competencyQuestions(graph, competencyQuestions, { entailmentUnavailable: cause })
+                .pipe(
+                    Effect.result,
+                    Effect.map((result) => (result._tag === 'Success' ? result.success : null)),
+                );
+        }
         // One step decides and materializes, so nothing the decision made is validated, digested or checked twice.
         const reasoned = yield* Effect.matchEffect(
             reasonerService.decideAndMaterialize(graph, {
@@ -2241,7 +2287,25 @@ export function runCheckProjectSemanticKernel(
                 onFailure: (cause) =>
                     cause instanceof TrustedNegativeReasonerOutcomeError
                         ? Effect.succeed({ _tag: 'Negative' as const, cause })
-                        : Effect.fail(ontologyError(cause, 'reasoning', loaded.projectRoot)),
+                        : advisoryQuestions(ontologyError(cause, 'reasoning', loaded.projectRoot).code).pipe(
+                              Effect.flatMap((advisory) => {
+                                  const error = ontologyError(cause, 'reasoning', loaded.projectRoot);
+                                  return Effect.fail(
+                                      advisory === null
+                                          ? error
+                                          : new CheckProjectOperationalError(
+                                                error.code,
+                                                error.stage,
+                                                error.message,
+                                                [
+                                                    ...error.diagnostics,
+                                                    ...advisoryQuestionDiagnostics(projects, advisory),
+                                                ],
+                                                error.cause,
+                                            ),
+                                  );
+                              }),
+                          ),
                 onSuccess: ({ decision, reasoned: materialized }) =>
                     Effect.succeed({ _tag: 'Decision' as const, decision, materialized }),
             },
@@ -2270,6 +2334,7 @@ export function runCheckProjectSemanticKernel(
             if (context.outcome === 'refused') {
                 keepUnavailable(context.reason);
             }
+            const advisory = yield* advisoryQuestions(context.reason);
             return yield* constructReport('reasoning', () =>
                 failedReasoningReport(
                     loaded,
@@ -2295,12 +2360,14 @@ export function runCheckProjectSemanticKernel(
                         ...(context.axiomRoots === undefined ? {} : { axiomRoots: context.axiomRoots }),
                     },
                     limits,
+                    advisory,
                 ),
             );
         }
         const decision = reasoned.decision;
         if (decision.response.result.consistency === 'inconsistent') {
             keepUnavailable('global-inconsistency');
+            const advisory = yield* advisoryQuestions('global-inconsistency');
             return yield* constructReport('reasoning', () =>
                 failedReasoningReport(
                     loaded,
@@ -2323,11 +2390,13 @@ export function runCheckProjectSemanticKernel(
                         axiomRoots: decision.normalization.axiomRoots,
                     },
                     limits,
+                    advisory,
                 ),
             );
         }
         if (decision.response.result.diagnostics.some((item) => item.severity === 'error')) {
             keepUnavailable('reasoner-error-diagnostic');
+            const advisory = yield* advisoryQuestions('reasoner-error-diagnostic');
             return yield* constructReport('reasoning', () =>
                 failedReasoningReport(
                     loaded,
@@ -2350,6 +2419,7 @@ export function runCheckProjectSemanticKernel(
                         axiomRoots: decision.normalization.axiomRoots,
                     },
                     limits,
+                    advisory,
                 ),
             );
         }
