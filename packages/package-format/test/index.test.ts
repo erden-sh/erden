@@ -13,6 +13,7 @@ import {
     GENERATED_MANIFEST_ARCHIVE_PATH,
     GENERATED_MANIFEST_PATH,
     isPackageFormatVersionCompatible,
+    makeGitIgnoreRules,
     makePackageIgnorePolicy,
     normalizePackagePath,
     PACKAGE_FORMAT_VERSION,
@@ -284,6 +285,56 @@ describe('@erden/package-format V1 contract', () => {
         expect(Object.isFrozen(policy)).toBe(true);
     });
 
+    it('matches one .gitignore file with git semantics relative to its folder', () => {
+        const rules = makeGitIgnoreRules(
+            new TextEncoder().encode(
+                [
+                    '# comment',
+                    '*.log',
+                    '!keep.log',
+                    'build/',
+                    '/root-only.ttl',
+                    'docs/*.md',
+                    '**/cache/**',
+                    'a/**/z.ttl',
+                    '[Tt]emp?.csv',
+                    'data[!0-9].json',
+                    '\\#hash.ttl',
+                    '\\!bang.ttl',
+                    'trailing\\ ',
+                    'two**stars.ttl',
+                    'bad\\',
+                    '',
+                ].join('\r\n'),
+            ),
+        );
+        expect(rules.isEmpty).toBe(false);
+        expect(rules.match('x/trace.log', false)).toBe(true);
+        expect(rules.match('x/keep.log', false)).toBe(false);
+        expect(rules.match('ontology.ttl', false)).toBeUndefined();
+        expect(rules.match('src/build', true)).toBe(true);
+        expect(rules.match('src/build', false)).toBeUndefined();
+        expect(rules.match('root-only.ttl', false)).toBe(true);
+        expect(rules.match('sub/root-only.ttl', false)).toBeUndefined();
+        expect(rules.match('docs/readme.md', false)).toBe(true);
+        expect(rules.match('docs/deep/readme.md', false)).toBeUndefined();
+        expect(rules.match('one/cache/two/blob', false)).toBe(true);
+        expect(rules.match('a/z.ttl', false)).toBe(true);
+        expect(rules.match('a/b/c/z.ttl', false)).toBe(true);
+        expect(rules.match('Temp1.csv', false)).toBe(true);
+        expect(rules.match('temp/.csv', false)).toBeUndefined();
+        expect(rules.match('datax.json', false)).toBe(true);
+        expect(rules.match('data1.json', false)).toBeUndefined();
+        expect(rules.match('#hash.ttl', false)).toBe(true);
+        expect(rules.match('!bang.ttl', false)).toBe(true);
+        expect(rules.match('trailing ', false)).toBe(true);
+        expect(rules.match('twoxstars.ttl', false)).toBe(true);
+        expect(rules.match('two/stars.ttl', false)).toBeUndefined();
+        expect(rules.match('bad', false)).toBeUndefined();
+        expect(makeGitIgnoreRules(new TextEncoder().encode('# only\n\n')).isEmpty).toBe(true);
+        expectFixtureError(() => makeGitIgnoreRules(Uint8Array.of(0xff)), 'invalid-utf8');
+    });
+
     it('keeps the shared ignore decoder strict and snapshots hostile byte input', () => {
         expectFixtureError(
             () =>
@@ -367,10 +418,26 @@ describe('@erden/package-format V1 contract', () => {
         }
     });
 
+    it('keeps package and dependency IRIs whose host case differs from the URL serialization exactly as written', () => {
+        const canonicalIri = 'https://Example.TEST/packages/demo';
+        const dependencyIri = 'https://sBPMN.github.io/2.0/';
+        const fixture = encodeReferencePackageFixture({
+            ...GOLDEN_INPUT,
+            canonicalIri,
+            dependencies: [{ ...ZETA_DEPENDENCY, canonicalIri: dependencyIri }],
+        });
+        expect(fixture.manifest.canonicalIri).toBe(canonicalIri);
+        expect(fixture.manifest.dependencies.map((dependency) => dependency.canonicalIri)).toEqual([dependencyIri]);
+    });
+
     it.each([
         ['empty package IRI', { ...GOLDEN_INPUT, canonicalIri: '' }],
         ['relative package IRI', { ...GOLDEN_INPUT, canonicalIri: 'relative/package' }],
         ['noncanonical package IRI', { ...GOLDEN_INPUT, canonicalIri: 'HTTPS://EXAMPLE.TEST:443/packages/demo' }],
+        [
+            'default port beside a mixed-case host',
+            { ...GOLDEN_INPUT, canonicalIri: 'https://Example.test:443/packages/demo' },
+        ],
         ['nonexact package version', { ...GOLDEN_INPUT, version: '^1.2.3' }],
         ['oversized package version', { ...GOLDEN_INPUT, version: `1.2.3+${'a'.repeat(300)}` }],
         [

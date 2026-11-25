@@ -1105,15 +1105,8 @@ async function resolveWithRegistry(
                 'The targeted update identifier is not one exact authored dependency',
             );
         }
-        if (
-            existingLock !== undefined &&
-            (existingLock.root.canonicalIri !== manifest.canonicalIri || existingLock.root.alias !== manifest.alias)
-        ) {
-            throw new DependencyResolutionError(
-                'existing-lock-mismatch',
-                'The existing lock belongs to a different root identity',
-            );
-        }
+        // Without a selection the existing lock only guards authored aliases against retargeting, so a renamed root
+        // (alias and/or canonical IRI) simply re-locks under its new identity, as if no lock existed.
         const lock = buildLock(manifest, toolchain, [], new Map());
         return resolvedResult(lock);
     }
@@ -1129,15 +1122,17 @@ async function resolveWithRegistry(
             'A registry origin is required to resolve manifest dependencies',
         );
     }
+    // A renamed root re-locks under its new identity: without a selection the existing lock only guards authored
+    // aliases against retargeting, and those mappings stay meaningful while the registry is unchanged. A changed
+    // registry would compare aliases across registries, so it still refuses, naming both origins and the remedy.
     if (
         existingLock !== undefined &&
-        (existingLock.root.canonicalIri !== manifest.canonicalIri ||
-            existingLock.root.alias !== manifest.alias ||
-            (existingLock.registryOrigin !== null && existingLock.registryOrigin !== manifest.registry))
+        existingLock.registryOrigin !== null &&
+        existingLock.registryOrigin !== manifest.registry
     ) {
         throw new DependencyResolutionError(
             'existing-lock-mismatch',
-            'The existing lock belongs to a different root identity or registry',
+            `erden.lock was resolved against registry ${existingLock.registryOrigin}, but the manifest now names ${manifest.registry}; delete erden.lock and run the command again to resolve against the new registry`,
         );
     }
     let catalogCalls = 0;
@@ -1199,7 +1194,7 @@ async function resolveWithRegistry(
             if (result === null) {
                 throw new DependencyResolutionError(
                     'alias-not-found',
-                    `The catalog has no published identity for ${identifier}`,
+                    `The registry ${registryOrigin} has no published ontology with the alias ${identifier}`,
                 );
             }
             canonicalIri = validateAliasResolution(result, identifier).canonicalIri;

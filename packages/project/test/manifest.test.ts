@@ -157,8 +157,9 @@ const MANIFEST_SERIALIZATION_TARGETS: ReadonlyArray<readonly [ManifestSerializat
 
 const NON_CANONICAL_IRI_SPELLINGS = [
     'HTTPS://example.test/ontology',
-    'https://EXAMPLE.TEST/ontology',
+    'https://EXAMPLE.TEST:443/ontology',
     'https://example.test:443/ontology',
+    'https://EXAMPLE.TEST/ontology/../core',
     'https://example.test/ontology/../core',
     'https://example.test/café',
     'https://example.test/cafe\u0301',
@@ -725,9 +726,29 @@ describe('identity, registry, dependencies, and paths', () => {
     });
 
     it.each([
+        ['https://EXAMPLE.TEST/ontology', 'https://EXAMPLE.TEST/ontology#'],
+        ['https://sBPMN.github.io/2.0/', 'https://sBPMN.github.io/2.0/'],
+    ])(
+        'keeps canonical IRI %s and owned prefix %s exactly as written when only the host case differs',
+        (canonicalIri, prefix) => {
+            expect(new URL(canonicalIri).href).not.toBe(canonicalIri);
+            const { manifest } = parseJson(minimalManifest({ canonicalIri, ownedIriPrefixes: [prefix] }));
+            expect(manifest.canonicalIri).toBe(canonicalIri);
+            expect(manifest.ownedIriPrefixes).toEqual([prefix]);
+        },
+    );
+
+    it('still refuses an owned prefix that differs from its serialization in more than the host case', () => {
+        const error = captureParseError(() =>
+            parseJson(minimalManifest({ ownedIriPrefixes: ['https://Example.test:443/ontology#'] })),
+        );
+        expect(error.diagnostics[0]?.path).toEqual(['ownedIriPrefixes', 0]);
+    });
+
+    it.each([
         'HTTPS://example.test/ontology',
-        'https://EXAMPLE.TEST/ontology',
         'https://example.test:443/ontology',
+        'https://Example.test:443/ontology',
         'http://example.test:80/ontology',
         'https://example.test:443',
         'https://example.test',
@@ -884,6 +905,12 @@ describe('identity, registry, dependencies, and paths', () => {
             code: 'invalid-dependency-identifier',
             path: ['dependencies', 'core'],
         });
+    });
+
+    it('keeps an IRI dependency identifier whose host case differs from the URL serialization as written', () => {
+        const identifier = 'https://sBPMN.github.io/2.0/';
+        const { manifest } = parseJson(minimalManifest({ dependencies: { [identifier]: '^2025.10.19' } }));
+        expect(Object.keys(manifest.dependencies)).toEqual([identifier]);
     });
 
     it.each(NON_CANONICAL_IRI_SPELLINGS)('rejects noncanonical IRI dependency identifier %s', (identifier) => {

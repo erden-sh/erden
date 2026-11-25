@@ -23,7 +23,7 @@
           "format": "uri",
           "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:(?!.*[\\s\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF])[\\s\\S]+$",
           "x-erden-canonical-iri": true,
-          "description": "an absolute ontology IRI using its exact canonical URL serialization"
+          "description": "an absolute ontology IRI using its canonical URL serialization (the host may use any letter case)"
         }
       ]
     },
@@ -41,7 +41,7 @@
             "format": "uri",
             "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:(?!.*[\\s\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF])[\\s\\S]+$",
             "x-erden-canonical-iri": true,
-            "description": "an absolute IRI prefix using its exact canonical URL serialization"
+            "description": "an absolute IRI prefix using its canonical URL serialization (the host may use any letter case)"
           }
         ]
       },

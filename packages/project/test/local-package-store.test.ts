@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { constants, promises as fs } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
@@ -1350,10 +1351,116 @@ describe('LocalPackageStore', () => {
             Effect.runPromise(makeLocalPackageStore().inspectInstall({ projectRoot, lock })),
         ).resolves.toMatchObject({ status: 'available', packages: 0 });
         if (process.platform !== 'win32') {
-            expect((await fs.lstat(join(projectRoot, '.erden'))).mode & 0o7777).toBe(0o555);
-            expect((await fs.lstat(join(projectRoot, '.erden', 'layers'))).mode & 0o7777).toBe(0o555);
+            expect((await fs.lstat(join(projectRoot, '.erden'))).mode & 0o7777).toBe(0o755);
+            expect((await fs.lstat(join(projectRoot, '.erden', 'layers'))).mode & 0o7777).toBe(0o755);
             expect((await fs.lstat(join(projectRoot, '.erden', 'install.json'))).mode & 0o7777).toBe(0o444);
         }
+    });
+
+    it('keeps installed files read-only but lets their owner remove .erden recursively', async () => {
+        const root = makeTestTempRoot('erden-store-');
+        roots.push(root);
+        const storeRoot = join(root, 'store');
+        const projectRoot = join(root, 'project');
+        const installRoot = join(projectRoot, '.erden');
+        await fs.mkdir(projectRoot);
+        const { a, b, lock } = fixture();
+        // Hardlinks share inodes with the store objects, so removing the install must leave the store intact.
+        const service = makeLocalPackageStore(
+            makeNodeStoreFileSystemPort({
+                copyFile: async () => {
+                    await Promise.resolve();
+                    throw Object.assign(new Error('clone unavailable'), { code: 'ENOTSUP' });
+                },
+            }),
+        );
+        for (const [encoded, expected] of [
+            [a, lock.packages[0]],
+            [b, lock.packages[1]],
+        ] as const) {
+            if (expected === undefined) {
+                throw new Error('fixture package');
+            }
+            await Effect.runPromise(
+                service.put({ storeRoot, expected, toolchain: lock.toolchain, archive: encoded.archiveBytes }),
+            );
+        }
+        const posix = process.platform !== 'win32';
+        // Root ignores permission bits, so only an ordinary user can observe the read-only directory failure.
+        const permissionsApply = posix && process.getuid?.() !== 0;
+        async function entries(path: string): Promise<Array<{ path: string; directory: boolean; mode: number }>> {
+            const stats = await fs.lstat(path);
+            const found = [{ path, directory: stats.isDirectory(), mode: stats.mode & 0o7777 }];
+            if (stats.isDirectory()) {
+                for (const name of await fs.readdir(path)) {
+                    found.push(...(await entries(join(path, name))));
+                }
+            }
+            return found;
+        }
+
+        await expect(Effect.runPromise(service.materialize({ storeRoot, projectRoot, lock }))).resolves.toMatchObject({
+            status: 'materialized',
+            strategies: { hardlink: 5 },
+        });
+        if (posix) {
+            const installed = await entries(installRoot);
+            expect(installed.filter(({ directory }) => directory).every(({ mode }) => mode === 0o755)).toBe(true);
+            expect(installed.filter(({ directory }) => !directory).every(({ mode }) => (mode & 0o222) === 0)).toBe(
+                true,
+            );
+        }
+        await fs.rm(installRoot, { recursive: true });
+        await expect(fs.access(installRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+        await expect(Effect.runPromise(service.verifyLockAvailability({ storeRoot, lock }))).resolves.toMatchObject({
+            status: 'available',
+            corrupt: [],
+        });
+
+        await expect(Effect.runPromise(service.materialize({ storeRoot, projectRoot, lock }))).resolves.toMatchObject({
+            status: 'materialized',
+        });
+        if (posix) {
+            execFileSync('rm', ['-rf', installRoot], { stdio: 'pipe' });
+            await expect(fs.access(installRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+        }
+
+        // An install an earlier release left with read-only directories still verifies, and the next materialization
+        // rebuilds it once with owner-writable directories.
+        await Effect.runPromise(service.materialize({ storeRoot, projectRoot, lock }));
+        if (posix) {
+            const directories = (await entries(installRoot)).filter(({ directory }) => directory).reverse();
+            for (const { path } of directories) {
+                await fs.chmod(path, 0o555);
+            }
+            if (permissionsApply) {
+                await expect(fs.rm(installRoot, { recursive: true })).rejects.toMatchObject({ code: 'EACCES' });
+            }
+            await expect(Effect.runPromise(service.inspectInstall({ projectRoot, lock }))).resolves.toMatchObject({
+                status: 'available',
+            });
+            await expect(
+                Effect.runPromise(service.pathForLayer({ projectRoot, lock, identifier: A })),
+            ).resolves.toMatchObject({ canonicalIri: A });
+            await expect(
+                Effect.runPromise(service.materialize({ storeRoot, projectRoot, lock })),
+            ).resolves.toMatchObject({ status: 'materialized', cleanup: 'clean' });
+            const rebuilt = await entries(installRoot);
+            expect(rebuilt.filter(({ directory }) => directory).every(({ mode }) => mode === 0o755)).toBe(true);
+            expect((await fs.readdir(projectRoot)).sort()).toEqual(['.erden']);
+        }
+        await expect(Effect.runPromise(service.materialize({ storeRoot, projectRoot, lock }))).resolves.toMatchObject({
+            status: 'hit',
+        });
+
+        // Writable directories do not weaken verification: an added file is still detected by the closure check.
+        const layer = await Effect.runPromise(service.pathForLayer({ projectRoot, lock, identifier: A }));
+        await fs.writeFile(join(layer.path, 'ontology', 'extra.ttl'), '<urn:x> <urn:p> <urn:o> .\n');
+        await expect(Effect.runPromise(service.inspectInstall({ projectRoot, lock }))).resolves.toMatchObject({
+            status: 'repair-required',
+        });
+        await fs.rm(installRoot, { recursive: true });
+        await expect(fs.access(installRoot)).rejects.toMatchObject({ code: 'ENOENT' });
     });
 
     it('checks direct and streamed archive chunk bounds before copying or writing them', async () => {

@@ -26,12 +26,53 @@ function registryOriginJsonSchema() {
     };
 }
 
+const ASCII_PRINTABLE_PATTERN = /^[\x21-\x7e]+$/u;
+const IRI_AUTHORITY_PATTERN = /^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^/?#]*)/u;
+
+/**
+ * An absolute IRI written as its WHATWG URL serialization, except that the letters of the host may be in any ASCII
+ * case. The URL parser lower-cases the host of http(s) and the other special schemes, but RDF 1.1 compares IRIs
+ * character by character, so an ontology published as `https://sBPMN.github.io/2.0/` has to keep that spelling. The
+ * value is never normalized: it is accepted or refused as written. Everything else (scheme case, default ports,
+ * dot segments, percent-encoding, a missing root path) stays as strict as the serialization.
+ */
 export function isCanonicalOntologyIri(value: string): boolean {
+    let url: URL;
     try {
-        return new URL(value).href === value;
+        url = new URL(value);
     } catch {
         return false;
     }
+    if (url.href === value) {
+        return true;
+    }
+    const lead = `${url.protocol}//`;
+    if (url.host === '' || url.username !== '' || url.password !== '' || !value.startsWith(lead)) {
+        return false;
+    }
+    const written = value.slice(lead.length, lead.length + url.host.length);
+    return (
+        ASCII_PRINTABLE_PATTERN.test(written) &&
+        written.toLowerCase() === url.host &&
+        `${lead}${url.host}${value.slice(lead.length + url.host.length)}` === url.href
+    );
+}
+
+/**
+ * The key two IRIs share when they differ only in the ASCII letter case of their authority (`scheme://authority`),
+ * which RFC 3986 treats as case-insensitive. Identity stays the exact string; this key is only for deciding who owns
+ * an IRI, so that a registry can refuse `https://sbpmn.github.io/2.0/` once `https://sBPMN.github.io/2.0/` is taken.
+ * An IRI without an authority is its own key. The registry's PostgreSQL function `erden_iri_ownership_key` computes the
+ * same key and must stay in step with this one.
+ */
+export function iriOwnershipKey(value: string): string {
+    const match = IRI_AUTHORITY_PATTERN.exec(value);
+    if (match === null) {
+        return value;
+    }
+    const lead = match[1] as string;
+    const authority = match[2] as string;
+    return `${lead}${authority.replace(/[A-Z]/gu, (letter) => letter.toLowerCase())}${value.slice(match[0].length)}`;
 }
 
 export function isScopedAlias(value: string): boolean {
@@ -51,7 +92,7 @@ const NonEmptyTrimmedString = Schema.NonEmptyString.check(Schema.isTrimmed(), We
 
 export const CanonicalOntologyIri = Schema.String.check(
     Schema.makeFilter(isCanonicalOntologyIri, {
-        expected: 'an absolute ontology IRI using its exact canonical URL serialization',
+        expected: 'an absolute ontology IRI using its canonical URL serialization (the host may use any letter case)',
         toJsonSchema: canonicalIriJsonSchema,
     }),
 );
@@ -59,7 +100,7 @@ export type CanonicalOntologyIri = typeof CanonicalOntologyIri.Type;
 
 export const OwnedIriPrefix = Schema.String.check(
     Schema.makeFilter(isCanonicalOntologyIri, {
-        expected: 'an absolute IRI prefix using its exact canonical URL serialization',
+        expected: 'an absolute IRI prefix using its canonical URL serialization (the host may use any letter case)',
         toJsonSchema: canonicalIriJsonSchema,
     }),
 );

@@ -25,6 +25,7 @@ import {
     makeNodePackFileSystemPort,
     nodeProjectDependencyStateService,
     makePackProjectService,
+    renderPackIgnoreNotes,
     renderPackProjectReport,
 } from '../src/index.js';
 
@@ -659,6 +660,47 @@ describe('PackProject', () => {
         });
     });
 
+    it('packs into a crowded output folder outside the project but still bounds the same crowd inside it', async () => {
+        const { parent, root, service } = await fixture();
+        const crowded = join(parent, 'crowded');
+        // The shared temp-root cleanup inspects every entry, so remove the crowd directly.
+        try {
+            await fs.mkdir(crowded);
+            const crowd = Array.from(
+                { length: PACK_PROJECT_TRAVERSAL_LIMITS.maxObservedEntries + 1 },
+                (_, index) => `${index.toString().padStart(8, '0')}.entry`,
+            );
+            for (let start = 0; start < crowd.length; start += 512) {
+                await Promise.all(crowd.slice(start, start + 512).map((name) => fs.writeFile(join(crowded, name), '')));
+            }
+            await fs.writeFile(join(crowded, 'EXAMPLE.ERDENPKG'), 'foreign');
+            await expect(
+                Effect.runPromise(
+                    service.pack({ version: '1.2.3', from: root, outputPath: join(crowded, 'example.erdenpkg') }),
+                ),
+            ).rejects.toMatchObject({ code: 'PACK_PROJECT_OUTPUT_EXISTS' });
+            const output = join(crowded, 'project-1.2.3.erdenpkg');
+            const report = await Effect.runPromise(service.pack({ version: '1.2.3', from: root, outputPath: output }));
+            expect(report).toMatchObject({ outcome: 'packed', output: { path: output, status: 'written' } });
+            await Effect.runPromise(validatePackageArchive(await fs.readFile(output)));
+
+            await fs.rm(output);
+            await fs.rename(crowded, join(root, 'crowded'));
+            await fs.writeFile(join(root, '.erdenignore'), 'crowded/*\n');
+            await expect(
+                Effect.runPromise(
+                    service.pack({ version: '1.2.3', from: root, outputPath: join(parent, 'project-1.2.3.erdenpkg') }),
+                ),
+            ).rejects.toMatchObject({
+                code: 'PACK_PROJECT_SOURCE_INVALID',
+                message: 'The observed project tree exceeds the closed traversal bound',
+            });
+        } finally {
+            await fs.rm(crowded, { recursive: true, force: true });
+            await fs.rm(join(root, 'crowded'), { recursive: true, force: true });
+        }
+    });
+
     it('preserves a raced foreign output and reports the no-overwrite conflict', async () => {
         const { parent, root } = await fixture();
         const output = join(parent, 'example-project-1.2.3.erdenpkg');
@@ -1007,5 +1049,182 @@ describe('PackProject', () => {
         release?.();
         await interrupted;
         expect(await fs.readdir(parent)).toEqual(['project']);
+    });
+});
+
+describe('PackProject .gitignore rules', () => {
+    async function packedPaths(path: string): Promise<ReadonlyArray<string>> {
+        const validated = await Effect.runPromise(validatePackageArchive(await fs.readFile(path)));
+        return validated.manifest.files.map(({ path: file }) => file);
+    }
+
+    it('leaves out files the enclosing repository root .gitignore ignores and names them', async () => {
+        const { parent, root, service } = await fixture();
+        const plain = await Effect.runPromise(service.pack({ version: '1.2.3', from: root }));
+        await fs.rm(plain.output.path);
+
+        // The repository root is the temp folder above the project; no git command runs.
+        await fs.mkdir(join(parent, '.git'));
+        await fs.writeFile(join(parent, '.gitignore'), 'project/audit/facts.ttl\n*.secret.nt\n');
+        const unchanged = await Effect.runPromise(service.pack({ version: '1.2.3', from: root }));
+        expect(unchanged.archive.sha256).toBe(plain.archive.sha256);
+        expect(unchanged).not.toHaveProperty('ignoredDataFiles');
+        expect(encodePackProjectReport(unchanged)).not.toContain('ignored');
+        await fs.rm(unchanged.output.path);
+
+        await fs.mkdir(join(root, 'audit', 'deep'), { recursive: true });
+        await fs.writeFile(join(root, 'audit', 'facts.ttl'), '<urn:private> <urn:p> <urn:o> .\n');
+        await fs.writeFile(join(root, 'audit', 'notes.md'), 'kept\n');
+        await fs.writeFile(join(root, 'audit', 'deep', 'people.secret.nt'), '<urn:a> <urn:b> <urn:c> .\n');
+        const report = await Effect.runPromise(service.pack({ version: '1.2.3', from: root }));
+        const paths = await packedPaths(report.output.path);
+        expect(paths).toContain('audit/notes.md');
+        expect(paths).not.toContain('audit/facts.ttl');
+        expect(paths).not.toContain('audit/deep/people.secret.nt');
+        expect(report.ignoredDataFiles).toEqual({
+            count: 2,
+            paths: ['audit/deep/people.secret.nt', 'audit/facts.ttl'],
+        });
+        expect(report).not.toHaveProperty('gitIgnoredIncluded');
+        expect(decodePackProjectReport(report)).toStrictEqual(report);
+        expect(JSON.parse(encodePackProjectReport(report))).toMatchObject({
+            ignoredDataFiles: { count: 2, paths: ['audit/deep/people.secret.nt', 'audit/facts.ttl'] },
+        });
+        const rendered = renderPackProjectReport(report);
+        expect(rendered).toContain('Left out by .gitignore or .erdenignore rules (2 data files):');
+        expect(rendered).toContain('  audit/facts.ttl\n');
+        expect(renderPackIgnoreNotes(report)).toBe(rendered.slice(rendered.indexOf('Left out')));
+
+        // A .git file, as in a worktree or submodule, marks the repository root too: here the project itself.
+        await fs.writeFile(join(root, '.git'), 'gitdir: /elsewhere\n');
+        const ownRoot = await Effect.runPromise(service.pack({ version: '2.0.0', from: root }));
+        expect(await packedPaths(ownRoot.output.path)).toContain('audit/facts.ttl');
+        expect(ownRoot).not.toHaveProperty('ignoredDataFiles');
+    });
+
+    it('applies negation, anchored and folder-only patterns, and subfolder .gitignore files with git semantics', async () => {
+        const { parent, root, service } = await fixture();
+        await fs.mkdir(join(parent, '.git'));
+        await fs.writeFile(join(root, '.gitignore'), '*.csv\n!keep.csv\nbuild/\n');
+        await fs.mkdir(join(root, 'data', 'cache'), { recursive: true });
+        await fs.mkdir(join(root, 'data', 'sub'), { recursive: true });
+        await fs.mkdir(join(root, 'build'));
+        await fs.writeFile(join(root, 'data', '.gitignore'), 'cache/\n/private.ttl\n!drop.csv\n');
+        await fs.writeFile(join(root, 'keep.csv'), 'a,b\n');
+        await fs.writeFile(join(root, 'drop.csv'), 'a,b\n');
+        await fs.writeFile(join(root, 'data', 'drop.csv'), 'a,b\n');
+        await fs.writeFile(join(root, 'data', 'private.ttl'), '<urn:s> <urn:p> <urn:o> .\n');
+        await fs.writeFile(join(root, 'data', 'sub', 'private.ttl'), '<urn:s> <urn:p> <urn:o> .\n');
+        await fs.writeFile(join(root, 'data', 'cache', 'blob.json'), '{}\n');
+        await fs.writeFile(join(root, 'data', 'sub', 'cache'), 'a file, not a folder\n');
+        await fs.writeFile(join(root, 'build', 'out.ttl'), '<urn:s> <urn:p> <urn:o> .\n');
+        const report = await Effect.runPromise(service.pack({ version: '1.2.3', from: root }));
+        expect(await packedPaths(report.output.path)).toEqual([
+            'README.bin',
+            'data/drop.csv',
+            'data/sub/cache',
+            'data/sub/private.ttl',
+            'erden.config.json',
+            'erden.lock',
+            'keep.csv',
+            'ontology.ttl',
+        ]);
+        // Ignored folders are not read, so only the files the scan saw are named.
+        expect(report.ignoredDataFiles).toEqual({ count: 2, paths: ['data/private.ttl', 'drop.csv'] });
+    });
+
+    it('still ships declared sources and required files a .gitignore matches, and says so', async () => {
+        const { parent, root, service } = await fixture();
+        const manifest = normalizeManifestV1({
+            schemaVersion: 1,
+            canonicalIri: 'https://example.test/project',
+            alias: '@example/project',
+            ownedIriPrefixes: ['https://example.test/project#'],
+            sources: { ontology: ['ontology.ttl', 'vocab'] },
+        });
+        await fs.writeFile(join(root, 'erden.config.json'), serializeManifestV1(manifest, 'json'));
+        await fs.writeFile(join(root, 'erden.lock'), serializeLockfileBytes(makeEmptyLockfile(manifest, TOOLCHAIN)));
+        await fs.mkdir(join(root, 'vocab'));
+        await fs.writeFile(join(root, 'vocab', 'terms.ttl'), '<urn:t> <urn:p> <urn:o> .\n');
+        await fs.writeFile(join(root, 'vocab', 'mapping.csv'), 'a,b\n');
+        await fs.writeFile(join(root, 'extra.ttl'), '<urn:x> <urn:p> <urn:o> .\n');
+        await fs.writeFile(join(root, 'LICENSE'), 'Apache-2.0\n');
+        await fs.mkdir(join(parent, '.git'));
+        await fs.writeFile(join(parent, '.gitignore'), '*.ttl\nproject/vocab/\nerden.lock\nLICENSE\n');
+        const report = await Effect.runPromise(service.pack({ version: '1.2.3', from: root }));
+        expect(await packedPaths(report.output.path)).toEqual([
+            'LICENSE',
+            'README.bin',
+            'erden.config.json',
+            'erden.lock',
+            'ontology.ttl',
+            'vocab/terms.ttl',
+        ]);
+        expect(report.gitIgnoredIncluded).toEqual({
+            count: 4,
+            paths: ['LICENSE', 'erden.lock', 'ontology.ttl', 'vocab/terms.ttl'],
+        });
+        expect(report.ignoredDataFiles).toEqual({ count: 2, paths: ['extra.ttl', 'vocab/mapping.csv'] });
+        expect(renderPackProjectReport(report)).toContain(
+            'Packed although .gitignore rules match them, because the manifest declares them or the package needs them (4 files):',
+        );
+    });
+
+    it("honors only the project's own .gitignore files outside any git repository", async () => {
+        const { parent, root, service } = await fixture();
+        await fs.writeFile(join(parent, '.gitignore'), 'project/kept.ttl\n');
+        await fs.writeFile(join(root, '.gitignore'), 'private/\n');
+        await fs.mkdir(join(root, 'private'));
+        await fs.writeFile(join(root, 'private', 'facts.ttl'), '<urn:s> <urn:p> <urn:o> .\n');
+        await fs.writeFile(join(root, 'kept.ttl'), '<urn:s> <urn:p> <urn:o> .\n');
+        const report = await Effect.runPromise(service.pack({ version: '1.2.3', from: root }));
+        const paths = await packedPaths(report.output.path);
+        expect(paths).toContain('kept.ttl');
+        expect(paths.some((path) => path.startsWith('private/'))).toBe(false);
+        expect(paths).not.toContain('.gitignore');
+    });
+
+    it('applies .erdenignore and .gitignore rules together', async () => {
+        const { parent, root, service } = await fixture();
+        await fs.mkdir(join(parent, '.git'));
+        await fs.writeFile(join(root, '.erdenignore'), 'README.bin\n*.nt\n');
+        await fs.writeFile(join(root, '.gitignore'), 'audit/\n');
+        await fs.mkdir(join(root, 'audit'));
+        await fs.writeFile(join(root, 'audit', 'facts.ttl'), '<urn:s> <urn:p> <urn:o> .\n');
+        await fs.writeFile(join(root, 'dump.nt'), '<urn:s> <urn:p> <urn:o> .\n');
+        const report = await Effect.runPromise(service.pack({ version: '1.2.3', from: root }));
+        expect(await packedPaths(report.output.path)).toEqual(['erden.config.json', 'erden.lock', 'ontology.ttl']);
+        expect(report.ignoredDataFiles).toEqual({ count: 1, paths: ['dump.nt'] });
+
+        // A .gitignore never overrides .erdenignore: a declared source it ignores still refuses the pack.
+        await fs.writeFile(join(root, '.erdenignore'), 'ontology.ttl\n');
+        await expect(Effect.runPromise(service.pack({ version: '1.2.4', from: root }))).rejects.toMatchObject({
+            code: 'PACK_PROJECT_REQUIRED_FILE_IGNORED',
+        });
+    });
+
+    it('bounds the listed paths and rejects malformed ignore notes', async () => {
+        const { parent, root, service } = await fixture();
+        await fs.mkdir(join(parent, '.git'));
+        await fs.writeFile(join(root, '.gitignore'), '*.nq\n');
+        for (let index = 0; index < 25; index += 1) {
+            await fs.writeFile(join(root, `g${String(index).padStart(2, '0')}.nq`), '');
+        }
+        const report = await Effect.runPromise(service.pack({ version: '1.2.3', from: root }));
+        expect(report.ignoredDataFiles?.count).toBe(25);
+        expect(report.ignoredDataFiles?.paths).toHaveLength(20);
+        expect(renderPackProjectReport(report)).toContain('  ...and 5 more\n');
+        const note = report.ignoredDataFiles;
+        if (note === undefined) {
+            throw new Error('expected an ignore note');
+        }
+        for (const bad of [
+            { count: 0, paths: [] },
+            { count: 25, paths: note.paths.slice(1) },
+            { count: 2, paths: ['b.ttl', 'a.ttl'] },
+            { count: 1, paths: ['/absolute.ttl'] },
+        ]) {
+            expect(() => decodePackProjectReport({ ...report, ignoredDataFiles: bad })).toThrow(TypeError);
+        }
     });
 });

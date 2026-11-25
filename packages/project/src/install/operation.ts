@@ -478,10 +478,35 @@ function resolutionFailure(cause: unknown): InstallProjectError {
               'No production dependency registry transport is configured',
               cause,
           )
-        : isDependencyResolutionError(cause) && cause.code === 'toolchain-incompatible'
-          ? // The resolver names the dependency and the toolchain; the remedy is a republish, not a local fix.
+        : isDependencyResolutionError(cause) &&
+            (cause.code === 'toolchain-incompatible' || cause.code === 'existing-lock-mismatch')
+          ? // The resolver names the dependency and the toolchain (a republish is the remedy), or the existing lock's
+            // mismatch and its local remedy.
             new InstallProjectError('INSTALL_PROJECT_RESOLUTION_FAILED', cause.message, cause)
-          : mapFailure('INSTALL_PROJECT_RESOLUTION_FAILED', 'The dependency closure could not be resolved')(cause);
+          : isDependencyResolutionError(cause) && (cause.code === 'alias-not-found' || cause.code === 'missing-version')
+            ? // The resolver names the alias or canonical IRI the registry does not publish.
+              new InstallProjectError(
+                  'INSTALL_PROJECT_RESOLUTION_FAILED',
+                  `The dependency closure could not be resolved: ${cause.message}`,
+                  cause,
+              )
+            : mapFailure('INSTALL_PROJECT_RESOLUTION_FAILED', 'The dependency closure could not be resolved')(cause);
+}
+
+/** Names the old and new root when erden.lock was written for a root the manifest no longer names; else empty. */
+function rootIdentityChange(
+    lockInspection: ProjectDependencyStateInspection['lockInspection'],
+    manifest: Readonly<{ readonly canonicalIri: string; readonly alias: string }>,
+): string {
+    const lock = lockInspection.lock;
+    if (
+        lockInspection.status !== 'stale' ||
+        lock === null ||
+        (lock.root.alias === manifest.alias && lock.root.canonicalIri === manifest.canonicalIri)
+    ) {
+        return '';
+    }
+    return ` (erden.lock was written for root ${lock.root.alias} <${lock.root.canonicalIri}>, but the manifest now names ${manifest.alias} <${manifest.canonicalIri}>)`;
 }
 
 function stateFailure(message: string) {
@@ -803,11 +828,14 @@ function runInstallProject(
         const prepare = Effect.gen(function* () {
             let lockStatus: 'existing' | 'written' = 'existing';
             if (state.lockInspection.status !== 'available') {
+                const rootChange = rootIdentityChange(state.lockInspection, state.project.manifest);
                 if (options.frozenLockfile) {
                     return yield* Effect.fail(
                         new InstallProjectError(
                             'INSTALL_PROJECT_FROZEN_LOCK_REQUIRED',
-                            'A canonical matching erden.lock is required by frozen-lockfile mode',
+                            rootChange === ''
+                                ? 'A canonical matching erden.lock is required by frozen-lockfile mode'
+                                : `A canonical matching erden.lock is required by frozen-lockfile mode${rootChange}; run erden install without --frozen-lockfile to re-lock the renamed root, then commit erden.lock`,
                         ),
                     );
                 }
@@ -826,7 +854,9 @@ function runInstallProject(
                         return yield* Effect.fail(
                             new InstallProjectError(
                                 'INSTALL_PROJECT_OFFLINE_LOCK_REQUIRED',
-                                'Offline install requires a canonical matching erden.lock for nonempty dependencies',
+                                rootChange === ''
+                                    ? 'Offline install requires a canonical matching erden.lock for nonempty dependencies'
+                                    : `Offline install requires a canonical matching erden.lock for nonempty dependencies${rootChange}; run erden install without --offline to re-lock the renamed root`,
                             ),
                         );
                     }

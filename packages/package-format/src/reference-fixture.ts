@@ -158,15 +158,35 @@ function semanticVersionSatisfies(version: string, requested: unknown, label: st
     }
 }
 
+/**
+ * The rule of `isCanonicalOntologyIri` in `@erden/contracts`, which this package does not depend on: the WHATWG URL
+ * serialization, except that the host's letters may be in any ASCII case, since RDF compares IRIs as written.
+ */
+function isCanonicalSerialization(iri: string, canonical: URL): boolean {
+    if (canonical.href === iri) {
+        return true;
+    }
+    const lead = `${canonical.protocol}//`;
+    if (canonical.host === '' || canonical.username !== '' || canonical.password !== '' || !iri.startsWith(lead)) {
+        return false;
+    }
+    const written = iri.slice(lead.length, lead.length + canonical.host.length);
+    return (
+        /^[\x21-\x7e]+$/u.test(written) &&
+        written.toLowerCase() === canonical.host &&
+        `${lead}${canonical.host}${iri.slice(lead.length + canonical.host.length)}` === canonical.href
+    );
+}
+
 function assertCanonicalIri(value: unknown, label: string): string {
     const iri = requireNonemptyString(value, label);
-    let canonical: string;
+    let canonical: URL;
     try {
-        canonical = new URL(iri).href;
+        canonical = new URL(iri);
     } catch {
         throw new PackageFixtureError('manifest-integrity', `${label} must be an absolute canonical IRI`);
     }
-    if (canonical !== iri) {
+    if (!isCanonicalSerialization(iri, canonical)) {
         throw new PackageFixtureError(
             'manifest-integrity',
             `${label} must use its canonical absolute IRI serialization`,

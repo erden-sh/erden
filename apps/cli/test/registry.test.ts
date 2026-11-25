@@ -466,6 +466,27 @@ describe('CLI publication workflow', () => {
         ]);
     });
 
+    it('names the files ignore rules kept out or let in before a human publish uploads, and not with --json', async () => {
+        const root = tempRoot();
+        writeManifest(root);
+        const value = {
+            ...report(join(root, 'project-1.2.3.erdenpkg')),
+            ignoredDataFiles: { count: 1, paths: ['audit/facts.ttl'] },
+            gitIgnoredIncluded: { count: 1, paths: ['ontology.ttl'] },
+        };
+        const human = context(root, value, runtime({ upload: () => Promise.resolve(attempt('queued')) }));
+        expect(await runPublishCommand(['1.2.3', '--no-wait'], human.context)).toBe(0);
+        const notes = human.stderr.join('');
+        expect(notes).toContain('Left out by .gitignore or .erdenignore rules (1 data file):\n  audit/facts.ttl\n');
+        expect(notes).toContain(
+            'because the manifest declares them or the package needs them (1 file):\n  ontology.ttl\n',
+        );
+
+        const json = context(root, value, runtime({ upload: () => Promise.resolve(attempt('queued')) }));
+        expect(await runPublishCommand(['1.2.3', '--no-wait', '--json'], json.context)).toBe(0);
+        expect(json.stderr).toEqual([]);
+    });
+
     describe('waiting for the decision', () => {
         it('follows the attempt to success, reporting progress on stderr and only the end on stdout', async () => {
             const root = tempRoot();
