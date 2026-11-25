@@ -18,7 +18,7 @@ import {
  * holds only proof-checked inferences, exactly as the run that wrote it materialized them.
  *
  * A refused or failed reasoning run is kept too, keyed by the same digest and the reasoner limits, when its outcome
- * follows from the inputs alone (a limit, an unsupported statement, an inconsistency), so a query on a project the
+ * follows from the inputs and the reasoner alone (a limit, an inconsistency), so a query on a project the
  * reasoner refuses does not try again each time. Failures of the machine (a crash, a timeout) are never kept.
  */
 

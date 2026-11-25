@@ -11,7 +11,6 @@ import {
 import {
     LOCAL_QUERY_GRAPHS,
     OntologyService,
-    ReasonerNormalizationError,
     ReasonerProcessError,
     ReasonerService,
     TrustedNegativeReasonerOutcomeError,
@@ -134,12 +133,12 @@ type Entailment =
     | Readonly<{ kind: 'entailed'; entry: EntailedCacheEntry; cached: boolean }>
     | Readonly<{ kind: 'unavailable'; cause: string }>;
 
-/** Whether a reasoning failure follows from the inputs and limits alone, so the next run would fail the same way. */
+/**
+ * Whether a reasoning failure follows from the inputs and limits alone, so the next run would fail the same way: the
+ * request ceiling. Refusals Erden's own code decides (normalization) are not kept, so a newer Erden decides again.
+ */
 function deterministicFailure(cause: unknown): boolean {
-    return (
-        cause instanceof ReasonerNormalizationError ||
-        (cause instanceof ReasonerProcessError && cause.code === 'REQUEST_TOO_LARGE')
-    );
+    return cause instanceof ReasonerProcessError && cause.code === 'REQUEST_TOO_LARGE';
 }
 
 function entail(

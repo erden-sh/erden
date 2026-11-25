@@ -55,7 +55,7 @@ the query prints why and exits 4 without an answer.
 Reasoning costs what it costs in `erden check`. So Erden keeps the inferences of the last successful reasoning run, by
 a digest of everything reasoning reads (the reasoner and the exact bytes, names and settings of every source), and
 reuses them while nothing changed. `erden check` keeps them too, so a query after a check is fast. A reasoning run that
-the reasoner refuses for these inputs (too large, outside its profile, inconsistent) is kept as well, with the reasoner
+the reasoner refuses for these inputs (over a limit, or inconsistent) is kept as well, with the reasoner
 limits it ran under, so a query does not try again until something changes. The cache is in
 `$XDG_CACHE_HOME/erden/entailments/v1` (by default `~/.cache/erden/entailments/v1`), or
 `%LOCALAPPDATA%\Erden\cache\entailments\v1` on Windows. It holds at most 32 entries, and you can delete it at any time.
