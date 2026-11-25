@@ -176,6 +176,10 @@ Docs: https://erden.sh
 Registry: https://registry.erden.sh, unless --registry or the nearest project's manifest names another.
   https://erden.sh is the website, not the registry: --registry https://erden.sh means https://registry.erden.sh.
 
+Package output (pack, publish):
+  --output <file> must name a file ending in .erdenpkg outside the project directory; its folder may hold any number
+  of other files. Without it, pack writes <scope>-<name>-<version>.erdenpkg to the folder that holds the project.
+
 Registry transport:
   Add, install, login, logout, publish, publication status, and query use one origin-scoped credential when present.
   Query text is read only from a file or standard input, never from the command line.

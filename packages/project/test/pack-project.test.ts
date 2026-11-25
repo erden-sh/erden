@@ -659,6 +659,47 @@ describe('PackProject', () => {
         });
     });
 
+    it('packs into a crowded output folder outside the project but still bounds the same crowd inside it', async () => {
+        const { parent, root, service } = await fixture();
+        const crowded = join(parent, 'crowded');
+        // The shared temp-root cleanup inspects every entry, so remove the crowd directly.
+        try {
+            await fs.mkdir(crowded);
+            const crowd = Array.from(
+                { length: PACK_PROJECT_TRAVERSAL_LIMITS.maxObservedEntries + 1 },
+                (_, index) => `${index.toString().padStart(8, '0')}.entry`,
+            );
+            for (let start = 0; start < crowd.length; start += 512) {
+                await Promise.all(crowd.slice(start, start + 512).map((name) => fs.writeFile(join(crowded, name), '')));
+            }
+            await fs.writeFile(join(crowded, 'EXAMPLE.ERDENPKG'), 'foreign');
+            await expect(
+                Effect.runPromise(
+                    service.pack({ version: '1.2.3', from: root, outputPath: join(crowded, 'example.erdenpkg') }),
+                ),
+            ).rejects.toMatchObject({ code: 'PACK_PROJECT_OUTPUT_EXISTS' });
+            const output = join(crowded, 'project-1.2.3.erdenpkg');
+            const report = await Effect.runPromise(service.pack({ version: '1.2.3', from: root, outputPath: output }));
+            expect(report).toMatchObject({ outcome: 'packed', output: { path: output, status: 'written' } });
+            await Effect.runPromise(validatePackageArchive(await fs.readFile(output)));
+
+            await fs.rm(output);
+            await fs.rename(crowded, join(root, 'crowded'));
+            await fs.writeFile(join(root, '.erdenignore'), 'crowded/*\n');
+            await expect(
+                Effect.runPromise(
+                    service.pack({ version: '1.2.3', from: root, outputPath: join(parent, 'project-1.2.3.erdenpkg') }),
+                ),
+            ).rejects.toMatchObject({
+                code: 'PACK_PROJECT_SOURCE_INVALID',
+                message: 'The observed project tree exceeds the closed traversal bound',
+            });
+        } finally {
+            await fs.rm(crowded, { recursive: true, force: true });
+            await fs.rm(join(root, 'crowded'), { recursive: true, force: true });
+        }
+    });
+
     it('preserves a raced foreign output and reports the no-overwrite conflict', async () => {
         const { parent, root } = await fixture();
         const output = join(parent, 'example-project-1.2.3.erdenpkg');

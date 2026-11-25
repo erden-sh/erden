@@ -556,9 +556,18 @@ async function assertSibling(
     expected: string,
     allowExact: boolean,
 ): Promise<void> {
-    const names = await readNames(operations, directory);
+    // The output parent lies strictly outside the project, so it is not package
+    // source and must not count against the project traversal bound: a crowded
+    // folder such as /tmp is a valid destination. Stream it and keep only the
+    // names that fold onto the expected one, so memory stays bounded.
     const folded = portablePathCollisionKey(expected);
-    const collisions = names.filter((name) => portablePathCollisionKey(name) === folded);
+    const collisions: string[] = [];
+    const stream = await operations.opendir(directory);
+    for await (const entry of stream) {
+        if (portablePathCollisionKey(entry.name) === folded) {
+            collisions.push(entry.name);
+        }
+    }
     if (
         collisions.some((name) => name !== expected) ||
         collisions.length > 1 ||

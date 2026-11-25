@@ -141,6 +141,13 @@ describe('erden CLI adapter', () => {
         expect(CLI_HELP.toLowerCase()).not.toContain('self-host');
     });
 
+    it('documents the .erdenpkg suffix that pack and publish require of --output', () => {
+        expect(CLI_HELP).toContain('Package output (pack, publish):');
+        expect(CLI_HELP).toContain(
+            '--output <file> must name a file ending in .erdenpkg outside the project directory',
+        );
+    });
+
     it('renders deterministic help on stdout', async () => {
         const captured = captureRuntime(tempRoot());
         expect(await runCli(['--help'], captured.runtime)).toBe(CLI_EXIT.success);
