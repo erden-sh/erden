@@ -53,13 +53,20 @@ const TOOLCHAIN: LockToolchain = Object.freeze({
 const REGISTRY = 'https://registry.example';
 const PACKAGE_IRI = 'https://example.test/package-a';
 
-async function createProject(root: string, dependencies: Readonly<Record<string, string>>): Promise<void> {
-    const manifest = normalizeManifestV1({
-        schemaVersion: 1,
+async function createProject(
+    root: string,
+    dependencies: Readonly<Record<string, string>>,
+    identity: Readonly<{ canonicalIri: string; alias: string; registry?: string }> = {
         canonicalIri: 'https://example.test/project-b',
         alias: '@example/project-b',
-        ownedIriPrefixes: ['https://example.test/project-b#'],
-        ...(Object.keys(dependencies).length === 0 ? {} : { registry: REGISTRY }),
+    },
+): Promise<void> {
+    const manifest = normalizeManifestV1({
+        schemaVersion: 1,
+        canonicalIri: identity.canonicalIri,
+        alias: identity.alias,
+        ownedIriPrefixes: [`${identity.canonicalIri}#`],
+        ...(Object.keys(dependencies).length === 0 ? {} : { registry: identity.registry ?? REGISTRY }),
         dependencies,
         sources: { ontology: ['ontology.ttl'] },
     });
@@ -296,6 +303,84 @@ describe('fixture dependency registry and InstallProject', () => {
         ).rejects.toMatchObject({ code: 'INSTALL_PROJECT_OFFLINE_LOCK_REQUIRED' });
         expect(fixture.registry.trace()).toEqual([]);
         await expect(fs.access(join(projectRoot, 'erden.lock'))).rejects.toBeDefined();
+    });
+
+    it.each([
+        ['alias', { canonicalIri: 'https://example.test/project-b', alias: '@renamed/project-b' }],
+        ['canonical IRI', { canonicalIri: 'https://example.test/project-c', alias: '@example/project-b' }],
+        ['alias and canonical IRI', { canonicalIri: 'https://example.test/project-c', alias: '@renamed/project-c' }],
+    ] as const)('re-locks a project whose root %s changed under an existing lock', async (_label, renamed) => {
+        const root = makeTestTempRoot('erden-install-root-rename-');
+        roots.push(root);
+        const projectRoot = join(root, 'project');
+        await createProject(projectRoot, { '@example/package-a': '^1.0.0' });
+        const encoded = packageFixture();
+        const store = fakeStore({ missing: [encoded.archiveSha256] });
+        const fixture = serviceFixture(root, store.service);
+        await Effect.runPromise(fixture.service.install({ from: projectRoot }));
+        const before = parseLockfile(await fs.readFile(join(projectRoot, 'erden.lock')));
+        expect(before.root).toEqual({ canonicalIri: 'https://example.test/project-b', alias: '@example/project-b' });
+
+        await createProject(projectRoot, { '@example/package-a': '^1.0.0' }, renamed);
+        const frozen = await Effect.runPromise(
+            fixture.service.install({ from: projectRoot, frozenLockfile: true }).pipe(Effect.flip),
+        );
+        expect(frozen.code).toBe('INSTALL_PROJECT_FROZEN_LOCK_REQUIRED');
+        expect(frozen.message).toContain(
+            'erden.lock was written for root @example/project-b <https://example.test/project-b>, but the manifest now names ' +
+                `${renamed.alias} <${renamed.canonicalIri}>`,
+        );
+        expect(frozen.message).toContain('run erden install without --frozen-lockfile');
+        const offline = await Effect.runPromise(
+            fixture.service.install({ from: projectRoot, offline: true }).pipe(Effect.flip),
+        );
+        expect(offline.code).toBe('INSTALL_PROJECT_OFFLINE_LOCK_REQUIRED');
+        expect(offline.message).toContain(`but the manifest now names ${renamed.alias} <${renamed.canonicalIri}>`);
+        expect(renderInstallProjectError(offline)).toContain('run erden install without --offline');
+        expect(parseLockfile(await fs.readFile(join(projectRoot, 'erden.lock')))).toEqual(before);
+
+        fixture.registry.clearTrace();
+        const report = await Effect.runPromise(fixture.service.install({ from: projectRoot }));
+        expect(report).toMatchObject({
+            project: renamed,
+            lock: { status: 'written' },
+            packages: { total: 1, reused: [encoded.archiveSha256], fetched: [] },
+            outcome: 'installed',
+        });
+        expect(fixture.registry.trace().map(({ operation }) => operation)).toEqual(['resolve-alias', 'list-published']);
+        const after = parseLockfile(await fs.readFile(join(projectRoot, 'erden.lock')));
+        expect(after.root).toEqual(renamed);
+        expect(after.packages).toEqual(before.packages);
+        fixture.registry.clearTrace();
+        await expect(
+            Effect.runPromise(fixture.service.install({ from: projectRoot, frozenLockfile: true })),
+        ).resolves.toMatchObject({ lock: { status: 'existing' } });
+        expect(fixture.registry.trace()).toEqual([]);
+    });
+
+    it('names both registries when erden.lock was resolved against another registry', async () => {
+        const root = makeTestTempRoot('erden-install-registry-change-');
+        roots.push(root);
+        const projectRoot = join(root, 'project');
+        await createProject(projectRoot, { '@example/package-a': '^1.0.0' });
+        const encoded = packageFixture();
+        const store = fakeStore({ missing: [encoded.archiveSha256] });
+        const fixture = serviceFixture(root, store.service);
+        await Effect.runPromise(fixture.service.install({ from: projectRoot }));
+        await createProject(
+            projectRoot,
+            { '@example/package-a': '^1.0.0' },
+            {
+                canonicalIri: 'https://example.test/project-b',
+                alias: '@example/project-b',
+                registry: 'https://other-registry.example',
+            },
+        );
+        const failure = await Effect.runPromise(fixture.service.install({ from: projectRoot }).pipe(Effect.flip));
+        expect(failure.code).toBe('INSTALL_PROJECT_RESOLUTION_FAILED');
+        expect(failure.message).toBe(
+            'erden.lock was resolved against registry https://registry.example, but the manifest now names https://other-registry.example; delete erden.lock and run the command again to resolve against the new registry',
+        );
     });
 
     it('writes a canonical empty lock offline with zero registry calls', async () => {

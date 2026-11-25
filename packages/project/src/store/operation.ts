@@ -92,6 +92,14 @@ const ARCHIVE_FILE = 'archive.erdenpkg';
 const PACKAGE_DIRECTORY = 'package';
 const INSTALL_MARKER = 'install.json';
 const LAYERS_DIRECTORY = 'layers';
+/**
+ * A project install keeps its files read-only (a hardlinked file shares its inode with the store object), but its
+ * directories stay owner-writable so that `rm -rf .erden` works without a chmod: removing an entry needs write
+ * permission on its parent directory, not on the entry. Content and closure checks, not directory modes, detect edits.
+ */
+const INSTALL_DIRECTORY_MODE = 0o755;
+/** Earlier releases wrote read-only install directories; they still verify, and the next install rewrites them. */
+const READ_ONLY_INSTALL_DIRECTORY_MODE = 0o555;
 const REGISTRATIONS_DIRECTORY = 'registrations';
 const STORE_ADMIN_MARKER = '.erden.store-admin.transaction.json';
 const REGISTRATION_FINAL = /^([0-9a-f]{64})\.([0-9a-f]{64})\.json$/u;
@@ -133,6 +141,7 @@ interface VerifiedObject {
 interface VerifiedPackageTree {
     readonly root: FileIdentity;
     readonly closure: ReadonlyMap<string, { readonly path: string; readonly identity: FileIdentity }>;
+    readonly readOnlyDirectories: boolean;
 }
 
 interface VerifiedInstall {
@@ -140,6 +149,8 @@ interface VerifiedInstall {
     readonly root: FileIdentity;
     readonly closure: ReadonlyMap<string, { readonly path: string; readonly identity: FileIdentity }>;
     readonly objectMarkers: ReadonlyMap<string, StoreObjectMarker>;
+    /** Whether an earlier release left any install directory read-only (POSIX only). */
+    readonly readOnlyDirectories: boolean;
 }
 
 interface InstalledClosureCapability {
@@ -254,6 +265,18 @@ function physicalMode(stats: BigIntStats): number {
 
 function modeMatches(operations: StoreNodeOperations, stats: BigIntStats, expected: number): boolean {
     return !operations.enforcePosixModes || physicalMode(stats) === expected;
+}
+
+/** A store object directory is exactly read-only; a project install directory is owner-writable or legacy read-only. */
+function directoryModeMatches(operations: StoreNodeOperations, stats: BigIntStats, install: boolean): boolean {
+    return install
+        ? modeMatches(operations, stats, INSTALL_DIRECTORY_MODE) ||
+              modeMatches(operations, stats, READ_ONLY_INSTALL_DIRECTORY_MODE)
+        : modeMatches(operations, stats, 0o555);
+}
+
+function readOnlyInstallDirectory(operations: StoreNodeOperations, stats: BigIntStats): boolean {
+    return operations.enforcePosixModes && physicalMode(stats) === READ_ONLY_INSTALL_DIRECTORY_MODE;
 }
 
 async function lstatOrNull(operations: StoreNodeOperations, path: string): Promise<BigIntStats | null> {
@@ -821,15 +844,17 @@ async function verifyPackageTree(
     operations: StoreNodeOperations,
     packageRoot: string,
     marker: StoreObjectMarker,
+    install = false,
 ): Promise<VerifiedPackageTree> {
     const packageRootStats = await operations.lstat(packageRoot, { bigint: true });
     if (
         !packageRootStats.isDirectory() ||
         packageRootStats.isSymbolicLink() ||
-        !modeMatches(operations, packageRootStats, 0o555)
+        !directoryModeMatches(operations, packageRootStats, install)
     ) {
         throw new Error('package root');
     }
+    let readOnlyDirectories = readOnlyInstallDirectory(operations, packageRootStats);
     const maximumClosure = marker.files.length + impliedDirectories(marker.files).size + 1;
     const closure = await collectClosure(operations, packageRoot, maximumClosure);
     const manifestPath = safeJoin(packageRoot, GENERATED_MANIFEST_PATH);
@@ -877,9 +902,10 @@ async function verifyPackageTree(
             throw new Error('package directory');
         }
         const stats = await operations.lstat(entry.path, { bigint: true });
-        if (!sameIdentity(entry.identity, stats) || !modeMatches(operations, stats, 0o555)) {
+        if (!sameIdentity(entry.identity, stats) || !directoryModeMatches(operations, stats, install)) {
             throw new Error('package directory identity');
         }
+        readOnlyDirectories ||= readOnlyInstallDirectory(operations, stats);
     }
     for (const file of marker.files) {
         const entry = closure.get(file.path);
@@ -901,7 +927,7 @@ async function verifyPackageTree(
     ) {
         throw new Error('package closure changed');
     }
-    return deepFreeze({ root: identity(packageRootAfter), closure: finalClosure });
+    return deepFreeze({ root: identity(packageRootAfter), closure: finalClosure, readOnlyDirectories });
 }
 
 function objectPath(storeRoot: string, digest: string): string {
@@ -4326,9 +4352,10 @@ async function verifyInstallAt(
     expectedLock?: LockfileV1,
 ): Promise<VerifiedInstall> {
     const rootStats = await operations.lstat(installRoot, { bigint: true });
-    if (!rootStats.isDirectory() || rootStats.isSymbolicLink() || !modeMatches(operations, rootStats, 0o555)) {
+    if (!rootStats.isDirectory() || rootStats.isSymbolicLink() || !directoryModeMatches(operations, rootStats, true)) {
         throw new Error('install root');
     }
+    let readOnlyDirectories = readOnlyInstallDirectory(operations, rootStats);
     const markerPath = join(installRoot, INSTALL_MARKER);
     const markerIdentity = identity(await operations.lstat(markerPath, { bigint: true }));
     const markerRead = await readFileVerified(operations, markerPath, undefined, 64 * 1024 * 1024, markerIdentity);
@@ -4404,7 +4431,8 @@ async function verifyInstallAt(
         if (projectedEntries > LOCAL_PACKAGE_STORE_LIMITS.maxInstallEntries) {
             throw new Error('install aggregate entry bound');
         }
-        const tree = await verifyPackageTree(operations, packageRoot, storeMarker);
+        const tree = await verifyPackageTree(operations, packageRoot, storeMarker, true);
+        readOnlyDirectories ||= tree.readOnlyDirectories;
         const base = `${LAYERS_DIRECTORY}/${layer.directory}`;
         aggregate.set(base, tree.root);
         for (const [path, entry] of tree.closure) {
@@ -4432,14 +4460,15 @@ async function verifyInstallAt(
         throw new Error('layers container');
     }
     const layersStats = await operations.lstat(layersEntry.path, { bigint: true });
-    if (!sameIdentity(layersEntry.identity, layersStats) || !modeMatches(operations, layersStats, 0o555)) {
+    if (!sameIdentity(layersEntry.identity, layersStats) || !directoryModeMatches(operations, layersStats, true)) {
         throw new Error('layers container identity');
     }
+    readOnlyDirectories ||= readOnlyInstallDirectory(operations, layersStats);
     const rootAfter = await operations.lstat(installRoot, { bigint: true });
     if (!sameIdentity(identity(rootStats), rootAfter) || rootStats.mode !== rootAfter.mode) {
         throw new Error('install root changed');
     }
-    return deepFreeze({ marker, root: identity(rootAfter), closure, objectMarkers });
+    return deepFreeze({ marker, root: identity(rootAfter), closure, objectMarkers, readOnlyDirectories });
 }
 
 async function restoreAuthenticatedBackup(
@@ -4672,6 +4701,14 @@ async function inspectInstallPromise(
     input: InspectInstallInput,
     fileSystem: StoreFileSystemPort,
 ): Promise<InstallInspection> {
+    return (await inspectInstallDetailed(input, fileSystem)).inspection;
+}
+
+/** Inspects the project install and also says whether an earlier release left its directories read-only. */
+async function inspectInstallDetailed(
+    input: InspectInstallInput,
+    fileSystem: StoreFileSystemPort,
+): Promise<Readonly<{ inspection: InstallInspection; readOnlyDirectories: boolean }>> {
     const projectRoot = assertAbsoluteRoot(input.projectRoot, 'The project root');
     const projectSnapshot = await snapshotDirectoryRoot(fileSystem.operations, projectRoot, 'INSTALL_REPAIR_REQUIRED');
     const lock = decodeLockfileValue(input.lock);
@@ -4684,7 +4721,10 @@ async function inspectInstallPromise(
         stats !== null,
         'INSTALL_REPAIR_REQUIRED',
     );
-    async function finish(value: InstallInspection): Promise<InstallInspection> {
+    async function finish(
+        value: InstallInspection,
+        readOnlyDirectories = false,
+    ): Promise<Readonly<{ inspection: InstallInspection; readOnlyDirectories: boolean }>> {
         await assertNoPortableSibling(
             fileSystem.operations,
             projectRoot,
@@ -4693,7 +4733,7 @@ async function inspectInstallPromise(
             'INSTALL_REPAIR_REQUIRED',
         );
         await recheckDirectoryRoot(fileSystem.operations, projectRoot, projectSnapshot);
-        return value;
+        return Object.freeze({ inspection: value, readOnlyDirectories });
     }
     if (stats === null) {
         const names = await readDirectoryBounded(fileSystem.operations, projectRoot);
@@ -4712,12 +4752,14 @@ async function inspectInstallPromise(
         );
     }
     let result: InstallInspection;
+    let readOnlyDirectories = false;
     try {
-        const { marker } = await verifyInstallAt(fileSystem.operations, installRoot, lock);
+        const verified = await verifyInstallAt(fileSystem.operations, installRoot, lock);
+        readOnlyDirectories = verified.readOnlyDirectories;
         result = deepFreeze({
             status: 'available',
-            manifestDependencySha256: marker.manifestDependencySha256,
-            packages: marker.layers.length,
+            manifestDependencySha256: verified.marker.manifestDependencySha256,
+            packages: verified.marker.layers.length,
         });
     } catch {
         try {
@@ -4731,7 +4773,7 @@ async function inspectInstallPromise(
             result = deepFreeze({ status: 'repair-required', manifestDependencySha256: null, packages: null });
         }
     }
-    return await finish(result);
+    return await finish(result, readOnlyDirectories);
 }
 
 async function importPackageTree(
@@ -4770,11 +4812,11 @@ async function importPackageTree(
         }
     }
     for (const directory of [...impliedDirectories(marker.files)].sort((left, right) => right.length - left.length)) {
-        await operations.chmod(safeJoin(destinationRoot, directory), 0o555);
+        await operations.chmod(safeJoin(destinationRoot, directory), INSTALL_DIRECTORY_MODE);
     }
-    await operations.chmod(destinationRoot, 0o555);
+    await operations.chmod(destinationRoot, INSTALL_DIRECTORY_MODE);
     await verifyPackageTree(operations, sourceRoot, marker);
-    await verifyPackageTree(operations, destinationRoot, marker);
+    await verifyPackageTree(operations, destinationRoot, marker, true);
     await verifyPackageTree(operations, sourceRoot, marker);
     return counts;
 }
@@ -4826,8 +4868,12 @@ async function materializePromise(
         }
     }
     const recoveryCleanup = await recoverInterruptedMaterialization(operations, projectRoot, projectRootIdentity, lock);
-    const current = await inspectInstallPromise({ projectRoot, lock }, fileSystem);
-    if (current.status === 'available') {
+    const inspected = await inspectInstallDetailed({ projectRoot, lock }, fileSystem);
+    const current = inspected.inspection;
+    // A current install that an earlier release left with read-only directories is rebuilt once, through the same
+    // authenticated swap as a stale one, so that its owner can remove .erden without a chmod.
+    const replacing = current.status === 'stale' || (current.status === 'available' && inspected.readOnlyDirectories);
+    if (current.status === 'available' && !replacing) {
         await recheckDirectoryRoot(operations, projectRoot, projectRootIdentity);
         if (storeRootIdentity !== undefined) {
             await recheckDirectoryRoot(operations, storeRoot, storeRootIdentity);
@@ -4859,9 +4905,9 @@ async function materializePromise(
     const backupRoot = join(projectRoot, backupName);
     await assertNoPortableSibling(operations, projectRoot, stageName, false);
     await assertNoPortableSibling(operations, projectRoot, backupName, false);
-    await assertNoPortableSibling(operations, projectRoot, '.erden', current.status === 'stale');
+    await assertNoPortableSibling(operations, projectRoot, '.erden', replacing);
     let previous: OwnedTree | undefined;
-    if (current.status === 'stale') {
+    if (replacing) {
         const previousVerified = await verifyInstallAt(operations, installRoot);
         previous = {
             root: previousVerified.root,
@@ -4899,7 +4945,7 @@ async function materializePromise(
             totals.copy += counts.copy;
             await verifyObjectAt(operations, objectPath(storeRoot, layer.archiveSha256), layer.archiveSha256);
         }
-        await operations.chmod(join(stageRoot, LAYERS_DIRECTORY), 0o555);
+        await operations.chmod(join(stageRoot, LAYERS_DIRECTORY), INSTALL_DIRECTORY_MODE);
         const markerHandle = await operations.open(join(stageRoot, INSTALL_MARKER), 'wx', 0o600);
         try {
             owned.entries.set(INSTALL_MARKER, identity(await operations.stat(markerHandle)));
@@ -4909,7 +4955,7 @@ async function materializePromise(
             await operations.close(markerHandle);
         }
         await operations.chmod(join(stageRoot, INSTALL_MARKER), 0o444);
-        await operations.chmod(stageRoot, 0o555);
+        await operations.chmod(stageRoot, INSTALL_DIRECTORY_MODE);
         await recheckDirectoryRoot(operations, projectRoot, projectRootIdentity);
         if (storeRootIdentity !== undefined) {
             await recheckDirectoryRoot(operations, storeRoot, storeRootIdentity);

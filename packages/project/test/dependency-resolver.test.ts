@@ -808,6 +808,38 @@ describe('DependencyResolver', () => {
         expect(adopted.lock.registryOrigin).toBe('https://registry.example');
     });
 
+    it('re-locks a renamed root against its existing lock but refuses a changed registry by name', async () => {
+        const iri = 'https://example.test/a';
+        const fixture = catalog({ '@example/a': iri }, { [iri]: [published(iri, '1.0.0')] });
+        const first = await resolve(manifest({ '@example/a': '*' }), fixture);
+        const renamed: ManifestV1 = {
+            ...manifest({ '@example/a': '*' }),
+            canonicalIri: 'https://example.test/renamed',
+            alias: '@renamed/root',
+            ownedIriPrefixes: ['https://example.test/renamed#'],
+        };
+        const relocked = await resolve(renamed, fixture, { existingLock: first.lock });
+        expect(relocked.lock.root).toEqual({ canonicalIri: 'https://example.test/renamed', alias: '@renamed/root' });
+        expect(relocked.lock.packages).toEqual(first.lock.packages);
+        const emptyFirst = await resolve(manifest({}, null), catalog({}, {}));
+        const emptyRenamed = await resolve({ ...renamed, dependencies: {} }, catalog({}, {}), {
+            existingLock: emptyFirst.lock,
+        });
+        expect(emptyRenamed.lock.root.alias).toBe('@renamed/root');
+
+        const moved = catalog({ '@example/a': iri }, { [iri]: [published(iri, '1.0.0')] });
+        const failure = await resolve(manifest({ '@example/a': '*' }, 'https://other.example'), moved, {
+            existingLock: first.lock,
+        }).then(
+            () => undefined,
+            (cause: unknown) => cause,
+        );
+        expect(failure).toMatchObject({ code: 'existing-lock-mismatch' });
+        expect((failure as Error).message).toContain('registry https://registry.example');
+        expect((failure as Error).message).toContain('now names https://other.example');
+        expect(moved.aliasCalls).toEqual([]);
+    });
+
     it('reports deterministic exact constraint provenance for an unsatisfiable one-version conflict', async () => {
         const iri = 'https://example.test/a';
         const fixture = catalog({ '@example/a': iri }, { [iri]: [published(iri, '1.0.0'), published(iri, '2.0.0')] });
